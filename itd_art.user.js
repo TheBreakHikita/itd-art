@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ITD ART
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  Расширение функционала окна рисования.
+// @version      1.1
+// @description  Расширение функционала окна рисования. Новости и обновления: https://t.me/itd_art
 // @author       TheBreakHikita
 // @match        https://xn--d1ah4a.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=xn--d1ah4a.com
@@ -632,3 +632,4 @@
 
 
 })();
+
