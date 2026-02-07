@@ -6,8 +6,8 @@
 // @author       TheBreakHikita
 // @match        https://xn--d1ah4a.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=xn--d1ah4a.com
-// @downloadURL 
-// @updateURL 
+// @downloadURL  https://github.com/TheBreakHikita/itd-art/raw/refs/heads/main/itd_art.user.js
+// @updateURL    https://github.com/TheBreakHikita/itd-art/raw/refs/heads/main/itd_art.user.js
 // @grant        none
 // ==/UserScript==
 
@@ -629,5 +629,6 @@
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
+
 
 })();
