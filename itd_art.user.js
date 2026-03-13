@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ITD ART
 // @namespace    http://tampermonkey.net/
-// @version      2.1
+// @version      2.2
 // @description  Новое окно рисования с расширением функционала. Новости и обновления: https://t.me/itd_art
 // @author       TheBreakHikita
 // @match        https://xn--d1ah4a.com/*
@@ -14,7 +14,6 @@
 (function() {
     'use strict';
 
-    // Константы и состояние
     let state = {
         isOpen: false,
         tool: 'brush',
@@ -26,12 +25,15 @@
         startY: 0,
         history: [],
         historyStep: -1,
-		showConfirmations: localStorage.getItem('itd_show_confirmations') !== 'false' 
+		showConfirmations: localStorage.getItem('itd_show_confirmations') !== 'false',
+		isPreview: false,
+		isCropping: false,
+        cropImg: null,
+        cropParams: { x: 0, y: 0, w: 0, h: 0, ratio: true },
     };
 
     let canvas, ctx, overlayCanvas, oCtx, snapshot;
 
-    // --- CSS СТИЛИ ---
     const styles = `
         .itd-modal-overlay {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
@@ -84,6 +86,7 @@
             position: relative;
             box-shadow: 0 0 30px rgba(0,0,0,0.5);
             line-height: 0;
+			overflow: hidden;
             /* Шахматка Photoshop */
             background-color: #ffffff;
             background-image: 
@@ -340,6 +343,208 @@
 		.itd-pin-btn svg {
 			transition: transform 0.2s ease;
 		}
+		/* Стили для режима предпросмотра */
+        .itd-modal-overlay.preview-active {
+            background: rgba(0,0,0,0.5); /* Затемняем сайт чуть меньше */
+            backdrop-filter: none;
+        }
+        .preview-active .itd-editor-container {
+            background: transparent;
+            border: none;
+            box-shadow: none;
+            position: absolute;
+            transition: all 0.3s ease;
+        }
+        .preview-active .itd-toolbar, 
+        .preview-active .itd-canvas-area {
+            padding: 0;
+            background: transparent;
+        }
+        .preview-active .itd-toolbar { display: none; }
+        .preview-active-site-interface {
+            position: relative !important;
+            z-index: 1000001 !important;
+            pointer-events: none !important; /* Чтобы клики проходили сквозь текст на холст */
+        }
+        /* Отключаем клики для всего интерфейса в режиме превью */
+        .preview-active-site-interface * {
+            pointer-events: none !important;
+        }
+        /* Если нужно, чтобы текст всё же можно было выделить, 
+           но кнопки (верификация, редактировать, подписки) не нажимались: */
+        .preview-active-site-interface .WsNIl9yN, 
+        .preview-active-site-interface .hSN99swS {
+            pointer-events: none !important;
+            cursor: default !important;
+            opacity: 0.8; /* Немного приглушим их визуально */
+        }
+        .preview-active .itd-footer {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background: #1c1c1e; /* Темный фон как в редакторе */
+            border: 1px solid #3a3a3c;
+            border-radius: 16px;
+            padding: 12px 20px;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.8);
+            z-index: 1000002;
+            width: auto;
+        }
+        /* Делаем кнопки в превью чуть компактнее */
+        .preview-active .itd-btn {
+            padding: 8px 16px;
+        }
+        .itd-btn-preview.active {
+            background: #ff9500;
+            color: white;
+            box-shadow: 0 0 15px rgba(255, 149, 0, 0.4);
+        }
+        .preview-active .canvas-wrapper {
+            box-shadow: 0 0 20px rgba(0,0,0,0.8);
+        }
+        .itd-brush-cursor {
+            position: fixed;
+            pointer-events: none;
+			background: white;
+            border: 1px solid rgba(255, 255, 255, 0.8);
+            box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+            border-radius: 50%;
+            z-index: 2000001;
+            display: none;
+            transform: translate(-50%, -50%);
+            mix-blend-mode: difference;
+        }
+        #main-canvas {
+            cursor: none !important; /* Скрываем стандартный курсор над холстом */
+        }
+        /* Кнопка с числом */
+        .itd-size-dynamic {
+            width: 36px; height: 36px; 
+            border: 2px solid #3a3a3c; 
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            color: #ebebf5; font-size: 13px; font-weight: 800; 
+            cursor: pointer; transition: 0.2s; background: #1a1a1a;
+            position: relative;
+        }
+        .itd-size-dynamic.active { border-color: #0a84ff; color: #0a84ff; }
+        .itd-size-dynamic:hover { background: #2c2c2e; }
+
+        /* Всплывающее окно над кнопкой */
+        .itd-size-popup {
+            position: fixed; /* Изменено с absolute на fixed */
+            background: #2c2c2e;
+            border: 1px solid #3a3a3c;
+            padding: 12px;
+            border-radius: 10px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+            display: none; 
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            z-index: 2000005; /* Поверх всех окон */
+            pointer-events: all;
+        }
+        .itd-size-popup.show { display: flex; }
+        
+        /* Треугольник внизу окошка */
+        .itd-size-popup::after {
+            content: '';
+            position: absolute;
+            top: 100%; left: 50%;
+            transform: translateX(-50%);
+            border: 8px solid transparent;
+            border-top-color: #2c2c2e;
+        }
+
+        .itd-size-popup span { color: #8e8e93; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+
+        /* Стили ползунка */
+        .itd-range-input {
+            -webkit-appearance: none;
+            width: 140px; height: 4px;
+            background: #48484a;
+            border-radius: 2px;
+            outline: none;
+            cursor: pointer;
+        }
+        .itd-range-input::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px; height: 16px;
+            background: #0a84ff;
+            border-radius: 50%;
+            box-shadow: 0 0 5px rgba(0,0,0,0.3);
+        }
+        .itd-crop-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.6); display: none; z-index: 10;
+            flex-direction: column; align-items: center; justify-content: center;
+			overflow: hidden;
+        }
+        .itd-crop-overlay.active { display: flex; }
+        /* Обновленные стили панели кадрирования */
+        .itd-crop-controls {
+            position: absolute; 
+            bottom: 30px; 
+            left: 50%; 
+            transform: translateX(-50%);
+            background: #1c1c1e; 
+            padding: 10px 16px; 
+            border-radius: 14px;
+            display: flex; 
+            align-items: center; 
+            gap: 12px; 
+            border: 1px solid #3a3a3c;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.6); 
+            z-index: 100;
+            min-width: 400px; /* Фиксированная минимальная ширина */
+            justify-content: space-between;
+        }
+        .itd-crop-label {
+            color: #ebebf5; 
+            font-size: 13px; 
+            display: flex; 
+            align-items: center; 
+            gap: 8px; 
+            cursor: pointer;
+            user-select: none;
+            padding-right: 12px;
+            border-right: 1px solid #3a3a3c;
+            height: 30px;
+        }
+        .itd-crop-label input {
+            width: 16px; height: 16px; cursor: pointer;
+        }
+        .itd-crop-btn-group {
+            display: flex;
+            gap: 8px;
+        }
+        /* Уточняем размеры кнопок внутри группы */
+        .itd-crop-controls .itd-btn {
+            padding: 8px 16px;
+            font-size: 13px;
+            height: 36px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .itd-crop-canvas-wrapper {
+            position: relative; border: 2px solid #0a84ff; cursor: move;
+            background-image: 
+                linear-gradient(45deg, #444 25%, transparent 25%), 
+                linear-gradient(-45deg, #444 25%, transparent 25%), 
+                linear-gradient(45deg, transparent 75%, #444 75%), 
+                linear-gradient(-45deg, transparent 75%, #444 75%);
+            background-size: 10px 10px;
+        }
+        .crop-handle {
+            position: absolute; width: 14px; height: 14px; background: #0a84ff;
+            border: 2px solid #fff; border-radius: 50%;
+        }
+        .handle-se { right: -7px; bottom: -7px; cursor: nwse-resize; }
     `;
 
     const styleSheet = document.createElement("style");
@@ -852,12 +1057,30 @@
                             <button title="Линия" class="itd-tool-btn" data-tool="line"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="19" x2="19" y2="5"></line></svg></button>
                             <button title="Прямоугольник" class="itd-tool-btn" data-tool="rect"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect></svg></button>
                             <button title="Круг" class="itd-tool-btn" data-tool="circle"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle></svg></button>
-                        </div>
-                        <div class="itd-tool-group">
+							<button title="Заливка" class="itd-tool-btn" data-tool="fill">
+								<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+									<path d="M19 11l-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z"></path>
+									<path d="m5 2 5 5"></path>
+									<path d="M2 13h15"></path>
+									<path d="M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z"></path>
+								</svg>
+							</button>
+						</div>
+                        <div class="itd-tool-group" style="position: relative;">
                             <button class="size-btn" data-size="2"><span class="size-dot" style="width:2px;height:2px"></span></button>
                             <button class="size-btn active" data-size="4"><span class="size-dot" style="width:4px;height:4px"></span></button>
                             <button class="size-btn" data-size="8"><span class="size-dot" style="width:8px;height:8px"></span></button>
                             <button class="size-btn" data-size="12"><span class="size-dot" style="width:12px;height:12px"></span></button>
+                            
+                            <!-- Кнопка динамического размера -->
+                            <div class="itd-size-dynamic" id="itd-size-trigger">
+                                <span id="itd-size-val">4</span>
+                                <!-- Всплывающее окошко -->
+                                <div class="itd-size-popup" id="itd-size-pop">
+                                    <span>Размер: <b id="itd-pop-val" style="color:#fff">4</b></span>
+                                    <input type="range" class="itd-range-input" id="itd-size-slider" min="1" max="100" value="4">
+                                </div>
+                            </div>
                         </div>
                         <div class="itd-tool-group" id="color-palette">
                             <div class="color-dot active" style="background:#000000" data-color="#000000"></div>
@@ -877,20 +1100,45 @@
                              <button title="Повторить" class="itd-tool-btn" id="btn-redo"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 7v6h-6"></path><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7"></path></svg></button>
                              <button title="Очистить" class="itd-tool-btn" id="btn-clear"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg></button>
                         </div>
+                        <div class="itd-tool-group" style="border: none; padding-left: 12px;">
+                             <button title="Загрузить картинку" class="itd-tool-btn" id="btn-upload">
+                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                     <polyline points="17 8 12 3 7 8"></polyline>
+                                     <line x1="12" y1="3" x2="12" y2="15"></line>
+                                 </svg>
+                             </button>
+                             <input type="file" id="itd-file-input" style="display:none" accept="image/*">
+                        </div>
                     </div>
                     <div class="itd-canvas-area">
                         <div class="canvas-wrapper">
                             <canvas id="main-canvas" width="1100" height="450"></canvas>
                             <canvas id="overlay-canvas" width="1100" height="450"></canvas>
-                        </div>
+							<div id="itd-crop-layer" class="itd-crop-overlay">
+							<div class="itd-crop-controls">
+								<label class="itd-crop-label">
+									<input type="checkbox" id="crop-prop" checked>
+									<span>Сохранять пропорции</span>
+								</label>
+								<div class="itd-crop-btn-group">
+									<button class="itd-btn itd-btn-cancel" id="crop-cancel">Отмена</button>
+									<button class="itd-btn itd-btn-save" id="crop-confirm">Добавить на холст</button>
+								</div>
+							</div>
+							</div>
+						</div>
                     </div>
                     <div class="itd-footer">
                         <button class="itd-btn itd-btn-settings" title="Настройки">
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
                         </button>
+						<button class="itd-btn itd-btn-settings itd-btn-preview" title="Предпросмотр на сайте">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                        </button>
                         <div style="flex-grow: 1;"></div>
-                        <button class="itd-btn itd-btn-cancel">Отмена</button>
-                        <button class="itd-btn itd-btn-save">Установить как баннер</button>
+                        <button class="itd-btn itd-btn-cancel" id="itd-btn-footer-cancel">Отмена</button>
+						<button class="itd-btn itd-btn-save" id="itd-btn-footer-save">Установить как баннер</button>
                     </div>
                 </div>
             </div>
@@ -901,6 +1149,16 @@
         modalNode.innerHTML = modalHtml;
         document.body.appendChild(modalNode);
 
+        // 1. Сначала создаем курсор
+        let cursor = document.getElementById('itd-brush-cursor');
+        if (!cursor) {
+            cursor = document.createElement('div');
+            cursor.id = 'itd-brush-cursor';
+            cursor.className = 'itd-brush-cursor';
+            document.body.appendChild(cursor);
+        }
+
+        // 2. Только потом инициализируем логику и события
         initCanvasLogic();
         attachEvents(modalNode);
     }
@@ -915,10 +1173,100 @@
 		saveHistory();
 	}
 
+	function togglePreviewMode(modal) {
+        const overlay = modal.querySelector('.itd-modal-overlay');
+        const container = modal.querySelector('.itd-editor-container');
+        const bannerImg = document.querySelector('.BLErSWUX img'); 
+        const profileInfo = document.querySelector('.-D3fn7RS');
+        const previewBtn = modal.querySelector('.itd-btn-preview');
+        const spacer = modal.querySelector('.itd-footer div[style*="flex-grow"]'); // Находим распорку здесь
+
+        state.isPreview = !state.isPreview;
+
+        if (state.isPreview && bannerImg) {
+            const rect = bannerImg.getBoundingClientRect();
+            
+            overlay.classList.add('preview-active');
+            previewBtn.classList.add('active');
+            
+            container.dataset.oldStyle = container.getAttribute('style') || '';
+            
+            container.style.position = 'fixed';
+            container.style.top = rect.top + 'px';
+            container.style.left = rect.left + 'px';
+            container.style.width = rect.width + 'px';
+            container.style.height = rect.height + 'px';
+            container.style.zIndex = '1000000';
+
+            bannerImg.style.opacity = '0';
+
+            if (profileInfo) {
+                profileInfo.classList.add('preview-active-site-interface');
+            }
+            
+            const cp = document.getElementById('dyatlo-color-panel-overlay');
+            if (cp && !state.palettePinned) cp.remove();
+
+        } else {
+            // ЛОГИКА ВЫХОДА ИЗ ПРЕДПРОСМОТРА
+            overlay.classList.remove('preview-active');
+            previewBtn.classList.remove('active');
+            container.setAttribute('style', container.dataset.oldStyle || '');
+
+            if (bannerImg) bannerImg.style.opacity = '1';
+
+            if (profileInfo) {
+                profileInfo.classList.remove('preview-active-site-interface');
+            }
+        }
+
+        // ЭТА СТРОКА ТЕПЕРЬ ВНЕ УСЛОВИЯ: она работает и на вход, и на выход
+        if (spacer) spacer.style.display = state.isPreview ? 'none' : 'block';
+    }
+
+	function updateCropUI() {
+			const layer = document.getElementById('itd-crop-layer');
+			const wrapper = layer.querySelector('.itd-crop-canvas-wrapper') || document.createElement('div');
+			
+			if (!wrapper.parentNode) {
+				wrapper.className = 'itd-crop-canvas-wrapper';
+				wrapper.innerHTML = '<div class="crop-handle handle-se"></div>';
+				layer.appendChild(wrapper);
+			}
+
+			const p = state.cropParams;
+			wrapper.style.left = p.x + 'px';
+			wrapper.style.top = p.y + 'px';
+			wrapper.style.width = p.w + 'px';
+			wrapper.style.height = p.h + 'px';
+			wrapper.style.position = 'absolute';
+			
+			// Рисуем превью на временном canvas внутри враппера
+			let tempCanvas = wrapper.querySelector('canvas');
+			if (!tempCanvas) {
+				tempCanvas = document.createElement('canvas');
+				wrapper.appendChild(tempCanvas);
+			}
+			tempCanvas.width = p.w;
+			tempCanvas.height = p.h;
+			const tCtx = tempCanvas.getContext('2d');
+			tCtx.drawImage(state.cropImg, 0, 0, p.w, p.h);
+	}
+
     function attachEvents(modal) {
-		modal.querySelector('.itd-btn-settings').onclick = showSettingsDialog;
-        modal.querySelector('.itd-btn-cancel').onclick = () => {
+        modal.querySelector('.itd-btn-settings').onclick = showSettingsDialog;
+        modal.querySelector('.itd-btn-preview').onclick = () => togglePreviewMode(modal);
+        modal.querySelector('#itd-btn-footer-cancel').onclick = () => {
             const closeAll = () => {
+                const brushCursor = document.getElementById('itd-brush-cursor');
+                if (brushCursor) brushCursor.remove();
+                if (state.isPreview) {
+                    const bannerImg = document.querySelector('.BLErSWUX img');
+                    const profileInfo = document.querySelector('.-D3fn7RS');
+                    if (bannerImg) bannerImg.style.opacity = '1';
+                    if (profileInfo) profileInfo.classList.remove('preview-active-site-interface');
+                    state.isPreview = false;
+                }
                 const cp = document.getElementById('dyatlo-color-panel-overlay');
                 if (cp) cp.remove();
                 modal.remove();
@@ -942,6 +1290,17 @@
                 modal.querySelectorAll('.itd-tool-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 state.tool = btn.dataset.tool;
+
+                // Управление курсором
+                const brushCursor = document.getElementById('itd-brush-cursor');
+                if (state.tool === 'fill') {
+                    brushCursor.style.display = 'none';
+                    canvas.style.setProperty('cursor', 'crosshair', 'important');
+                } else {
+                    canvas.style.setProperty('cursor', 'none', 'important');
+                    // Если мышь уже над холстом, показываем кружок
+                    brushCursor.style.display = 'block';
+                }
             };
         });
 
@@ -956,39 +1315,135 @@
         modal.querySelector('#itd-palette-btn').onclick = (e) => {
             toggleColorPanel(e.currentTarget);
         };
+        
+        const sizeTrigger = modal.querySelector('#itd-size-trigger'); 
+        const sizePopup = modal.querySelector('#itd-size-pop');       
+        const sizeSlider = modal.querySelector('#itd-size-slider');   
+        const sizeValText = modal.querySelector('#itd-size-val');     
+        const popValText = modal.querySelector('#itd-pop-val');       
+
+        const updateBrushSize = (newSize) => {
+            state.lineWidth = parseInt(newSize);
+            sizeValText.innerText = state.lineWidth;
+            popValText.innerText = state.lineWidth;
+            sizeSlider.value = state.lineWidth;
+
+            modal.querySelectorAll('.size-btn').forEach(b => {
+                b.classList.toggle('active', parseInt(b.dataset.size) === state.lineWidth);
+            });
+            
+            const isPreset = [2, 4, 8, 12].includes(state.lineWidth);
+            sizeTrigger.classList.toggle('active', !isPreset);
+        };
+
+        sizeTrigger.onclick = (e) => {
+            e.stopPropagation();
+            const isOpen = sizePopup.classList.contains('show');
+            
+            if (!isOpen) {
+                // Вычисляем координаты кнопки
+                const rect = sizeTrigger.getBoundingClientRect();
+                
+                // Устанавливаем положение окна над кнопкой
+                // rect.top - высота окна (примерно 80px) - отступ
+                sizePopup.style.top = (rect.top - 85) + 'px'; 
+                sizePopup.style.left = (rect.left + rect.width / 2 - 80) + 'px'; // 80 - половина ширины окна
+                
+                sizePopup.classList.add('show');
+            } else {
+                sizePopup.classList.remove('show');
+            }
+        };
+
+        // Исправленный клик вне области
+        const handleOutsideClick = (e) => {
+            if (sizePopup.classList.contains('show')) {
+                // Если кликнули не по кнопке и не по самому всплывающему окну
+                if (!sizeTrigger.contains(e.target) && !sizePopup.contains(e.target)) {
+                    sizePopup.classList.remove('show');
+                }
+            }
+        };
+        document.addEventListener('mousedown', handleOutsideClick);
+
+        sizeSlider.oninput = (e) => {
+            updateBrushSize(e.target.value);
+        };
 
         modal.querySelectorAll('.size-btn').forEach(btn => {
-            btn.onclick = () => {
-                modal.querySelectorAll('.size-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                state.lineWidth = parseInt(btn.dataset.size);
+            btn.onclick = (e) => {
+                e.stopPropagation(); 
+                updateBrushSize(btn.dataset.size);
+                sizePopup.classList.remove('show');
             };
         });
 
         modal.querySelector('#btn-undo').onclick = undo;
         modal.querySelector('#btn-redo').onclick = redo;
         modal.querySelector('#btn-clear').onclick = () => {
-			ctx.clearRect(0, 0, canvas.width, canvas.height);
-			saveHistory();
-		};
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            saveHistory();
+        };
+		
+        const fileInput = modal.querySelector('#itd-file-input');
+        const uploadBtn = modal.querySelector('#btn-upload');
+
+        uploadBtn.onclick = () => {
+            fileInput.value = '';
+            fileInput.click();
+        };
+
+        fileInput.onchange = (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    state.cropImg = img;
+                    state.isCropping = true;
+                    
+                    // Начальные размеры: вписываем в холст
+                    let ratio = Math.min(canvas.width / img.width, canvas.height / img.height, 1);
+                    state.cropParams = {
+                        x: (canvas.width - img.width * ratio) / 2,
+                        y: (canvas.height - img.height * ratio) / 2,
+                        w: img.width * ratio,
+                        h: img.height * ratio,
+                        origRatio: img.width / img.height,
+                        ratio: true
+                    };
+
+                    document.getElementById('itd-crop-layer').classList.add('active');
+                    updateCropUI();
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+        };
 
         const handleStart = (e) => {
+            if (state.isPreview || state.isCropping) return;
             const rect = canvas.getBoundingClientRect();
-			if (!state.palettePinned) {
-				const cp = document.getElementById('dyatlo-color-panel-overlay');
-				if (cp) cp.remove();
-			}
+            if (!state.palettePinned) {
+                const cp = document.getElementById('dyatlo-color-panel-overlay');
+                if (cp) cp.remove();
+            }
             state.isDrawing = true;
             state.startX = e.clientX - rect.left;
             state.startY = e.clientY - rect.top;
-            if (e.shiftKey) {
+            if (e.shiftKey || state.tool === 'fill') {
                 const rgb = state.color.match(/[A-Za-z0-9]{2}/g).map(h => parseInt(h, 16));
                 floodFill(Math.floor(state.startX), Math.floor(state.startY), rgb);
-                state.isDrawing = false; return;
+                state.isDrawing = false; 
+                return;
             }
             if (state.tool === 'brush' || state.tool === 'eraser') {
                 ctx.beginPath();
                 ctx.moveTo(state.startX, state.startY);
+                ctx.lineTo(state.startX, state.startY); 
+                
                 ctx.lineWidth = state.lineWidth;
                 if (state.tool === 'eraser') {
                     ctx.globalCompositeOperation = 'destination-out';
@@ -997,6 +1452,7 @@
                     ctx.globalCompositeOperation = 'source-over';
                     ctx.strokeStyle = state.color;
                 }
+                ctx.stroke(); 
             } else {
                 ctx.globalCompositeOperation = 'source-over';
                 snapshot = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -1012,7 +1468,7 @@
                 ctx.lineTo(x, y); ctx.stroke();
             } else {
                 ctx.putImageData(snapshot, 0, 0);
-				ctx.globalCompositeOperation = 'source-over';
+                ctx.globalCompositeOperation = 'source-over';
                 ctx.beginPath(); ctx.strokeStyle = state.color; ctx.lineWidth = state.lineWidth;
                 if (state.tool === 'line') { ctx.moveTo(state.startX, state.startY); ctx.lineTo(x, y); }
                 else if (state.tool === 'rect') ctx.strokeRect(state.startX, state.startY, x - state.startX, y - state.startY);
@@ -1025,11 +1481,28 @@
         };
 
         const handleEnd = () => { if (state.isDrawing) { state.isDrawing = false; saveHistory(); } };
+        const brushCursor = document.getElementById('itd-brush-cursor');
+        const updateCursor = (e) => {
+            if (!brushCursor || state.tool === 'fill') return;
+            brushCursor.style.left = e.clientX + 'px';
+            brushCursor.style.top = e.clientY + 'px';
+            brushCursor.style.width = state.lineWidth + 'px';
+            brushCursor.style.height = state.lineWidth + 'px';
+        };
+        canvas.addEventListener('mousemove', updateCursor);
+        canvas.addEventListener('mouseenter', () => { 
+            if (!state.isPreview && state.tool !== 'fill') {
+                brushCursor.style.display = 'block';
+            } 
+        });
+        canvas.addEventListener('mouseleave', () => { 
+            brushCursor.style.display = 'none'; 
+        });
         canvas.addEventListener('mousedown', handleStart);
         window.addEventListener('mousemove', handleMove);
         window.addEventListener('mouseup', handleEnd);
 
-        modal.querySelector('.itd-btn-save').onclick = (e) => {
+        modal.querySelector('#itd-btn-footer-save').onclick = (e) => {
             const saveLogic = async () => {
                 const btn = modal.querySelector('.itd-btn-save');
                 const originalText = btn.innerText;
@@ -1055,6 +1528,143 @@
                 saveLogic();
             }
         };
+		const cropLayer = modal.querySelector('#itd-crop-layer');
+        const cropConfirm = modal.querySelector('#crop-confirm');
+        const cropCancel = modal.querySelector('#crop-cancel');
+        const cropProp = modal.querySelector('#crop-prop');
+
+        cropProp.onchange = (e) => { 
+    state.cropParams.ratio = e.target.checked; 
+    
+    // Если пользователь включил сохранение пропорций
+		if (state.cropParams.ratio) {
+			// Рассчитываем новую высоту на основе текущей ширины и оригинального соотношения сторон
+			state.cropParams.h = state.cropParams.w / state.cropParams.origRatio;
+			
+			// Проверяем, не вылезла ли картинка за нижнюю границу холста после изменения высоты
+			if (state.cropParams.y + state.cropParams.h > canvas.height) {
+				// Если вылезла — сдвигаем её вверх насколько возможно
+				state.cropParams.y = canvas.height - state.cropParams.h;
+				
+				// Если даже со сдвигом не влезает (картинка выше самого холста), масштабируем по высоте холста
+				if (state.cropParams.y < 0) {
+					state.cropParams.y = 0;
+					state.cropParams.h = canvas.height;
+					state.cropParams.w = state.cropParams.h * state.cropParams.origRatio;
+				}
+			}
+			
+			// Моментально перерисовываем рамку кадрирования
+			updateCropUI();
+		}
+		};
+
+        cropCancel.onclick = () => {
+            cropLayer.classList.remove('active');
+            state.isCropping = false;
+            const wrp = cropLayer.querySelector('.itd-crop-canvas-wrapper');
+            if (wrp) wrp.remove();
+        };
+
+        cropConfirm.onclick = () => {
+            const p = state.cropParams;
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.drawImage(state.cropImg, p.x, p.y, p.w, p.h);
+            saveHistory();
+            cropCancel.click(); // Закрываем режим
+        };
+
+        // Логика перетаскивания и изменения размера
+        let isDragging = false, isResizing = false, startX, startY, startParams;
+
+        cropLayer.onmousedown = (e) => {
+            const wrapper = cropLayer.querySelector('.itd-crop-canvas-wrapper');
+            if (!wrapper) return;
+            
+            const handle = e.target.closest('.handle-se');
+            startX = e.clientX;
+            startY = e.clientY;
+            startParams = { ...state.cropParams };
+
+            if (handle) {
+                isResizing = true;
+            } else if (e.target.closest('.itd-crop-canvas-wrapper') || e.target.tagName === 'CANVAS') {
+                isDragging = true;
+            }
+            e.stopPropagation();
+        };
+
+        window.addEventListener('mousemove', (e) => {
+            if (!state.isCropping || (!isDragging && !isResizing)) return;
+            
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+
+            if (isDragging) {
+				state.cropParams.x = startParams.x + dx;
+				state.cropParams.y = startParams.y + dy;
+				} else if (isResizing) {
+                // Максимально допустимая ширина и высота с учетом текущей позиции X и Y
+                let maxWidth = canvas.width - startParams.x;
+                let maxHeight = canvas.height - startParams.y;
+
+                let newW = Math.max(20, startParams.w + dx);
+                let newH = Math.max(20, startParams.h + dy);
+
+                // Ограничиваем размер краями холста
+                if (newW > maxWidth) newW = maxWidth;
+                if (newH > maxHeight) newH = maxHeight;
+
+                if (state.cropParams.ratio) {
+                    // Если сохраняем пропорции, проверяем, какой из размеров стал ограничивающим
+                    let ratioW = newW;
+                    let ratioH = newW / state.cropParams.origRatio;
+
+                    if (ratioH > maxHeight) {
+                        ratioH = maxHeight;
+                        ratioW = ratioH * state.cropParams.origRatio;
+                    }
+                    newW = ratioW;
+                    newH = ratioH;
+                }
+
+                state.cropParams.w = newW;
+                state.cropParams.h = newH;
+            }
+            updateCropUI();
+        });
+
+        window.addEventListener('mouseup', () => { isDragging = isResizing = false; });
+		cropLayer.addEventListener('wheel', (e) => {
+			if (!state.isCropping) return;
+			e.preventDefault(); // Запрещаем прокрутку страницы
+
+			const scaleAmount = 0.1; // На сколько процентов менять размер за один шаг
+			const delta = e.deltaY > 0 ? -scaleAmount : scaleAmount;
+
+			// Рассчитываем новый размер
+			let newW = state.cropParams.w * (1 + delta);
+			let newH = state.cropParams.h * (1 + delta);
+
+			// Минимальный размер (например, 20 пикселей), чтобы картинка не исчезла
+			if (newW < 20 || newH < 20) return;
+
+			// Если включено сохранение пропорций
+			if (state.cropParams.ratio) {
+				if (newW / newH !== state.cropParams.origRatio) {
+					newH = newW / state.cropParams.origRatio;
+				}
+			}
+
+			// Чтобы картинка масштабировалась относительно своего центра:
+			state.cropParams.x -= (newW - state.cropParams.w) / 2;
+			state.cropParams.y -= (newH - state.cropParams.h) / 2;
+
+			state.cropParams.w = newW;
+			state.cropParams.h = newH;
+
+			updateCropUI();
+		}, { passive: false });
     }
 
     // --- ОБНОВЛЕННАЯ ЛОГИКА ВСТАВКИ КНОПКИ (ЛЕВЕЕ ОРИГИНАЛА) ---
