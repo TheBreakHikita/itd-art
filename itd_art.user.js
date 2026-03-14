@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ITD ART
 // @namespace    http://tampermonkey.net/
-// @version      2.3
+// @version      2.4
 // @description  Новое окно рисования с расширением функционала. Новости и обновления: https://t.me/itd_art
 // @author       TheBreakHikita
 // @match        https://xn--d1ah4a.com/*
@@ -16,6 +16,8 @@
 
     let state = {
         isOpen: false,
+		isTouch: false,
+        mode: 'banner',
         tool: 'brush',
         color: '#000000',
         lineWidth: 4,
@@ -25,7 +27,7 @@
         startY: 0,
         history: [],
         historyStep: -1,
-		showConfirmations: localStorage.getItem('itd_show_confirmations') !== 'false',
+        showConfirmations: localStorage.getItem('itd_show_confirmations') !== 'false',
 		dynamicCursor: localStorage.getItem('itd_dynamic_cursor') !== 'false',
 		isPreview: false,
 		isCropping: false,
@@ -35,9 +37,13 @@
         autoSaveTimer: null,
 		autoSaveInterval: parseInt(localStorage.getItem('itd_auto_save_interval')) || 60,
 		saveIndicatorEnabled: localStorage.getItem('itd_save_indicator') !== 'false',
+		isPipetteActive: false,
+		zoom: 1,
     };
 
     let canvas, ctx, overlayCanvas, oCtx, snapshot;
+	let zoomAnimation = null;
+    let currentRenderZoom = 1;
 
     const styles = `
         .itd-modal-overlay {
@@ -102,6 +108,10 @@
             background-size: 20px 20px;
             background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
             border-radius: 4px;
+        }
+        .canvas-wrapper.preview-white-bg {
+            background-image: none !important;
+            background-color: #ffffff !important;
         }
         #main-canvas { cursor: crosshair; border-radius: 4px; }
         #overlay-canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
@@ -269,6 +279,37 @@
             margin-bottom: 8px;
             transition: background 0.2s;
             cursor: default;
+        }
+        .itd-zoom-controls {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            margin-left: auto; /* Прижимает к правому краю */
+            padding-left: 15px;
+            border-left: 1px solid #3a3a3c;
+        }
+        .itd-zoom-indicator {
+            min-width: 50px;
+            text-align: center;
+            font-size: 12px;
+            font-weight: 600;
+            color: #ebebf5;
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: 0.2s;
+        }
+        .itd-zoom-indicator:hover {
+            background: rgba(255,255,255,0.1);
+            color: #0a84ff;
+        }
+        /* Чтобы холст можно было прокручивать при увеличении */
+        .itd-canvas-area {
+            overflow: auto; 
+            max-height: 600px;
+        }
+        .canvas-wrapper {
+            transform-origin: 0 0;
         }
         .itd-settings-item:hover {
             background: #3a3a3c;
@@ -663,6 +704,71 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+        @media (max-width: 1200px) {
+            .itd-editor-container { width: 95%; max-height: 95vh; overflow-y: auto; }
+            .itd-toolbar { flex-wrap: wrap; justify-content: center; gap: 8px; }
+            .itd-tool-group { border-right: none; border-bottom: 1px solid #3a3a3c; padding-bottom: 8px; justify-content: center; width: 100%; flex-wrap: wrap;}
+            .itd-tool-group:last-child { border-bottom: none; }
+            .itd-canvas-area { padding: 10px; }
+            .canvas-wrapper { max-width: 100%; overflow-x: auto; }
+            #main-canvas, #overlay-canvas { max-width: 100%; height: auto; touch-action: none; }
+            .itd-footer { flex-wrap: wrap; justify-content: center; }
+            .itd-btn { flex: 1; min-width: 120px; text-align: center; }
+            .itd-crop-controls { min-width: 90%; flex-wrap: wrap; bottom: 10px; }
+            .itd-confirm-modal { width: 90% !important; }
+            #color-panel { left: 50% !important; top: 50% !important; transform: translate(-50%, -50%); width: 90% !important; }
+            .itd-archive-list { grid-template-columns: 1fr; }
+        }
+        @media (max-height: 500px) and (orientation: landscape) {
+            .itd-modal-overlay { padding: 0; }
+            .itd-editor-container { 
+                width: 100%; height: 100vh; max-height: 100vh; 
+                border-radius: 0; border: none; flex-direction: row; 
+            }
+            
+            /* Панель инструментов уезжает влево и становится вертикальной */
+            .itd-toolbar { 
+                flex-direction: column; overflow-y: auto; overflow-x: hidden;
+                width: 65px; padding: 5px; gap: 8px; 
+                border-right: 1px solid #3a3a3c; border-bottom: none;
+                justify-content: flex-start; flex-wrap: nowrap;
+            }
+            .itd-tool-group { 
+                flex-direction: column; border-right: none; border-bottom: 1px solid #3a3a3c; 
+                padding-right: 0; padding-bottom: 8px; width: 100%; align-items: center;
+            }
+            .itd-tool-group:last-child { border-bottom: none; }
+            
+            /* Блок зума тоже становится вертикальным */
+            .itd-zoom-controls { 
+                flex-direction: column; border-left: none; border-top: 1px solid #3a3a3c; 
+                padding-left: 0; padding-top: 8px; margin-left: 0; gap: 8px; width: 100%;
+            }
+            
+            /* Холст занимает всю центральную часть экрана */
+            .itd-canvas-area { 
+                flex: 1; padding: 5px; display: flex; align-items: center; justify-content: center; 
+                overflow: hidden; 
+            }
+            #main-canvas, #overlay-canvas { 
+                max-height: 95vh !important; max-width: 100% !important; 
+                width: auto !important; height: auto !important; 
+            }
+            
+            /* Подвал (кнопки) уезжает вправо */
+            .itd-footer { 
+                flex-direction: column; width: 130px; border-top: none; border-left: 1px solid #3a3a3c; 
+                padding: 10px; justify-content: center; gap: 10px; flex-wrap: nowrap;
+            }
+            .itd-footer .itd-btn { width: 100%; min-width: 100%; font-size: 11px; padding: 10px 4px; }
+            .itd-footer div[style*="flex-grow"] { display: none; } 
+            
+            /* Правка окна размера кисти, чтобы оно открывалось сбоку, а не снизу */
+            .itd-size-popup { 
+                left: 70px !important; bottom: auto !important; 
+                top: 50% !important; transform: translateY(-50%) !important; 
+            }
+        }
     `;
 
     const styleSheet = document.createElement("style");
@@ -861,6 +967,39 @@
         if (!updateRes.ok) throw new Error('Не удалось привязать баннер к профилю');
         return true;
     }
+	async function uploadToPost(blob) {
+        // 1. Создаем системный файл из рисунка на холсте
+        const file = new File([blob], "itd_art_post.png", { type: "image/png" });
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(file);
+
+        // 2. Ищем невидимую кнопку загрузки файлов на сайте
+        // Ищем любой input типа file, который принимает картинки
+        const fileInput = document.querySelector('input[type="file"]');
+        
+        if (!fileInput) {
+            // Если сайт спрятал инпут так, что его не найти, используем буфер обмена
+            try {
+                const item = new ClipboardItem({ "image/png": blob });
+                await navigator.clipboard.write([item]);
+                alert("Готово! Теперь просто кликните в поле ввода поста и нажмите Ctrl+V (или Cmd+V), чтобы вставить рисунок.");
+                return true;
+            } catch (e) {
+                throw new Error('Не найдена кнопка прикрепления файла на сайте.');
+            }
+        }
+
+        // 3. --- МАГИЯ ДЛЯ СОВРЕМЕННЫХ САЙТОВ (React/Vue) ---
+        // Обычное присваивание fileInput.files = ... не сработает, так как React блокирует это.
+        // Поэтому мы вызываем "глубокий" системный сеттер браузера:
+        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'files').set;
+        nativeInputValueSetter.call(fileInput, dataTransfer.files);
+
+        // 4. Имитируем реальный выбор файла мышкой, чтобы сайт запустил загрузку
+        fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+        
+        return true;
+    }
 
 	// --- МАТЕМАТИЧЕСКИЕ ФУНКЦИИ КОНВЕРТАЦИИ ---
 
@@ -1042,15 +1181,24 @@
 
     const initDrag = (el, cb) => {
         const move = (e) => {
+            if (e.cancelable && e.touches) e.preventDefault(); // Запрет прокрутки при выборе цвета
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
             const r = el.getBoundingClientRect();
-            cb(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)));
+            cb(Math.max(0, Math.min(1, (clientX - r.left) / r.width)), Math.max(0, Math.min(1, (clientY - r.top) / r.height)));
             updateUI();
         };
-        el.onmousedown = (e) => { 
+        
+        const startDrag = (e) => { 
             move(e); 
-            window.onmousemove = move; 
-            window.onmouseup = () => window.onmousemove = null; 
+            window.onmousemove = window.ontouchmove = move; 
+            window.onmouseup = window.ontouchend = window.ontouchcancel = () => {
+                window.onmousemove = window.ontouchmove = null; 
+            };
         };
+
+        el.onmousedown = startDrag;
+        el.ontouchstart = startDrag;
     };
 
     initDrag(ui.sb, (x, y) => { colorState.s = x; colorState.v = 1 - y; });
@@ -1111,8 +1259,9 @@
     // Пипетка (адаптирована под ваш canvas)
     // Пипетка (адаптирована под ваш canvas)
     overlay.querySelector('#cp-pipette').onclick = () => {
+		state.isPipetteActive = true;
         const mainCanvas = document.getElementById('main-canvas');
-        const brushCursor = document.getElementById('itd-brush-cursor'); // Находим наш круглый курсор
+        const brushCursor = document.getElementById('itd-brush-cursor');
         if (!mainCanvas) return;
         
         const btn = overlay.querySelector('#cp-pipette');
@@ -1133,6 +1282,7 @@
             
             updateUI();
             btn.classList.remove('active');
+			state.isPipetteActive = false;
 
             // 2. ПОСЛЕ ВЫБОРА: Возвращаем настройки курсора в зависимости от текущего инструмента
             if (state.dynamicCursor && state.tool !== 'fill') {
@@ -1464,9 +1614,15 @@
         };
     }
 	
-	function openModal() {
+	function openModal(mode = 'banner') {
         if (state.isOpen) return;
         state.isOpen = true;
+        state.mode = mode; // Запоминаем текущий режим
+
+        // Настраиваем переменные в зависимости от режима
+        const canvasWidth = mode === 'post' ? 800 : 1100;
+        const canvasHeight = mode === 'post' ? 500 : 450;
+        const saveBtnText = mode === 'post' ? 'Добавить рисунок' : 'Установить как баннер';
 
 		document.body.style.overflow = 'hidden';
         document.body.style.userSelect = 'none';
@@ -1539,11 +1695,20 @@
                              </button>
                              <input type="file" id="itd-file-input" style="display:none" accept="image/*">
                         </div>
+						<div class="itd-zoom-controls">
+                            <button title="Уменьшить" class="itd-tool-btn" data-tool="zoomOut">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line><line x1="8" y1="11" x2="14" y2="11"></line></svg>
+                            </button>
+                            <div class="itd-zoom-indicator" id="itd-zoom-val" title="Сбросить масштаб">100%</div>
+                            <button title="Увеличить" class="itd-tool-btn" data-tool="zoomIn">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line><line x1="8" y1="11" x2="14" y2="11"></line><line x1="11" y1="8" x2="11" y2="14"></line></svg>
+                            </button>
+                        </div>
                     </div>
                     <div class="itd-canvas-area">
                         <div class="canvas-wrapper">
-                            <canvas id="main-canvas" width="1100" height="450"></canvas>
-                            <canvas id="overlay-canvas" width="1100" height="450"></canvas>
+                            <canvas id="main-canvas" width="${canvasWidth}" height="${canvasHeight}"></canvas>
+                            <canvas id="overlay-canvas" width="${canvasWidth}" height="${canvasHeight}"></canvas>
 							<div id="itd-crop-layer" class="itd-crop-overlay">
                                 <div class="itd-crop-backdrop"></div>
                                 <div class="itd-crop-dashed"></div>
@@ -1564,7 +1729,9 @@
                         <button class="itd-btn itd-btn-settings" title="Настройки">
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
                         </button>
-						<button class="itd-btn itd-btn-settings itd-btn-preview" title="Предпросмотр на сайте">
+						<button class="itd-btn itd-btn-settings itd-btn-preview" 
+                            title="${mode === 'post' ? 'Недоступно в режиме поста' : 'Предпросмотр на сайте'}" 
+                            ${mode === 'post' ? 'disabled style="opacity: 0.4; cursor: not-allowed;"' : ''}>
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
                         </button>
 						<button class="itd-btn itd-btn-settings itd-btn-archive" title="История сохранений">
@@ -1572,7 +1739,7 @@
                         </button>
                         <div style="flex-grow: 1;"></div>
                         <button class="itd-btn itd-btn-cancel" id="itd-btn-footer-cancel">Отмена</button>
-						<button class="itd-btn itd-btn-save" id="itd-btn-footer-save">Установить как баннер</button>
+						<button class="itd-btn itd-btn-save" id="itd-btn-footer-save">${saveBtnText}</button>
                     </div>
                 </div>
             </div>
@@ -1613,15 +1780,28 @@
         const bannerImg = document.querySelector('.BLErSWUX img'); 
         const profileInfo = document.querySelector('.-D3fn7RS');
         const previewBtn = modal.querySelector('.itd-btn-preview');
-        const spacer = modal.querySelector('.itd-footer div[style*="flex-grow"]'); // Находим распорку здесь
+		const wrapper = modal.querySelector('.canvas-wrapper');
+        const spacer = modal.querySelector('.itd-footer div[style*="flex-grow"]');
+		const area = modal.querySelector('.itd-canvas-area'); 
+        const indicator = modal.querySelector('#itd-zoom-val');
 
         state.isPreview = !state.isPreview;
 
         if (state.isPreview && bannerImg) {
+			state.zoom = 1;
+            currentRenderZoom = 1;
+            if (zoomAnimation) cancelAnimationFrame(zoomAnimation);
+            if (wrapper) wrapper.style.transform = 'scale(1)';
+            if (area) {
+                area.scrollLeft = 0;
+                area.scrollTop = 0;
+            }
+            if (indicator) indicator.innerText = '100%';
             const rect = bannerImg.getBoundingClientRect();
             
             overlay.classList.add('preview-active');
             previewBtn.classList.add('active');
+			if (wrapper) wrapper.classList.add('preview-white-bg');
             
             container.dataset.oldStyle = container.getAttribute('style') || '';
             
@@ -1644,6 +1824,7 @@
         } else {
             // ЛОГИКА ВЫХОДА ИЗ ПРЕДПРОСМОТРА
             overlay.classList.remove('preview-active');
+			if (wrapper) wrapper.classList.remove('preview-white-bg');
             previewBtn.classList.remove('active');
             container.setAttribute('style', container.dataset.oldStyle || '');
 
@@ -1698,7 +1879,116 @@
         tCtx.drawImage(state.cropImg, 0, 0, p.w, p.h);
 	}
 
-    function attachEvents(modal) {
+    function applyZoom(targetZoom, mouseX = 0, mouseY = 0) {
+        if (state.isPreview) return; // Блокировка зума в режиме предпросмотра
+
+        const wrapper = document.querySelector('.canvas-wrapper');
+        const area = document.querySelector('.itd-canvas-area');
+        const indicator = document.getElementById('itd-zoom-val');
+        
+        if (!wrapper || !area) return;
+
+        // Отменяем текущую анимацию, если пользователь быстро крутит колесико
+        if (zoomAnimation) cancelAnimationFrame(zoomAnimation);
+
+        const startZoom = currentRenderZoom;
+        const distance = targetZoom - startZoom;
+        const duration = 150; // Скорость анимации в мс (можно сделать быстрее/медленнее)
+        const startTime = performance.now();
+
+        const startScrollX = area.scrollLeft;
+        const startScrollY = area.scrollTop;
+
+        // Принудительно отключаем CSS-транзиции (на случай если они остались)
+        wrapper.style.transition = 'none';
+
+        // Функция покадровой анимации (синхронизирует масштаб и положение скролла)
+        function step(currentTime) {
+            let progress = (currentTime - startTime) / duration;
+            if (progress > 1) progress = 1;
+
+            // Эффект плавного замедления (ease-out cubic)
+            const easeProgress = 1 - Math.pow(1 - progress, 3);
+            currentRenderZoom = startZoom + distance * easeProgress;
+
+            if (mouseX !== 0 || mouseY !== 0) {
+                // Точечный математический расчет скролла для КАЖДОГО кадра
+                const newScrollX = (startScrollX + mouseX) * (currentRenderZoom / startZoom) - mouseX;
+                const newScrollY = (startScrollY + mouseY) * (currentRenderZoom / startZoom) - mouseY;
+
+                wrapper.style.transform = `scale(${currentRenderZoom})`;
+                area.scrollLeft = newScrollX;
+                area.scrollTop = newScrollY;
+            } else {
+                wrapper.style.transform = `scale(${currentRenderZoom})`;
+            }
+
+            if (indicator) indicator.innerText = Math.round(currentRenderZoom * 100) + '%';
+			
+			const brushCursor = document.getElementById('itd-brush-cursor');
+            if (brushCursor && brushCursor.style.display === 'block') {
+                const scaledSize = state.lineWidth * currentRenderZoom;
+                brushCursor.style.width = scaledSize + 'px';
+                brushCursor.style.height = scaledSize + 'px';
+            }
+
+            if (progress < 1) {
+                zoomAnimation = requestAnimationFrame(step);
+            } else {
+                state.zoom = targetZoom; // Фиксируем финальное значение
+                currentRenderZoom = targetZoom;
+            }
+        }
+
+        // Запускаем анимацию
+        zoomAnimation = requestAnimationFrame(step);
+    }
+
+    function adjustZoom(delta, e = null) {
+        if (state.isPreview) return; // Защита от зума в предпросмотре
+
+        let newZoom = state.zoom + delta;
+        if (newZoom < 0.2) newZoom = 0.2;
+        if (newZoom > 5) newZoom = 5;
+
+        if (newZoom !== state.zoom) {
+            state.zoom = newZoom; // Записываем целевой зум
+            
+            if (e) {
+                // Если зум происходит от колесика мыши (к точке курсора)
+                const area = document.querySelector('.itd-canvas-area');
+                const rect = area.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+                applyZoom(newZoom, mouseX, mouseY);
+            } else {
+                // Если зум от кнопок в интерфейсе (центрируем по экрану)
+                const area = document.querySelector('.itd-canvas-area');
+                const mouseX = area.clientWidth / 2;
+                const mouseY = area.clientHeight / 2;
+                applyZoom(newZoom, mouseX, mouseY);
+            }
+        }
+    }
+	
+	function attachEvents(modal) {
+		// Обработка клика по индикатору (сброс 100%)
+        modal.querySelector('#itd-zoom-val').onclick = () => {
+            if (state.isPreview) return; // Блокировка в превью
+            state.zoom = 1;
+            const area = modal.querySelector('.itd-canvas-area');
+            const mouseX = area.clientWidth / 2;
+            const mouseY = area.clientHeight / 2;
+            applyZoom(1, mouseX, mouseY); // Плавно отдалит по центру
+        };
+
+        const canvasArea = modal.querySelector('.itd-canvas-area');
+        canvasArea.addEventListener('wheel', (e) => {
+            if (e.ctrlKey) {
+                e.preventDefault();
+                adjustZoom(e.deltaY < 0 ? 0.2 : -0.2, e);
+            }
+        }, { passive: false });
 		modal.querySelector('.itd-btn-archive').onclick = showArchiveDialog;
         startAutoSaveTimer(); // Запускаем цикл при открытии редактора
         modal.querySelector('.itd-btn-settings').onclick = showSettingsDialog;
@@ -1724,6 +2014,8 @@
                 document.body.style.overflow = '';
                 document.body.style.userSelect = '';
                 document.body.style.touchAction = '';
+				state.zoom = 1;
+                currentRenderZoom = 1;
             };
 
             if (state.showConfirmations) {
@@ -1898,15 +2190,41 @@
         };
 
         const handleStart = (e) => {
-            if (state.isPreview || state.isCropping) return;
+            if (state.isPreview || state.isCropping || state.isPipetteActive) return;
+            
+			// Если это касание пальцем, включаем режим Touch и прячем курсор
+            if (e.touches) {
+                state.isTouch = true;
+                const brushCursor = document.getElementById('itd-brush-cursor');
+                if (brushCursor) brushCursor.style.display = 'none';
+            } else {
+                // Если кликнули мышью, обязательно сбрасываем режим Touch (важно для гибридных ПК)
+                state.isTouch = false;
+            }
+			
+            // Определяем координаты (мышь или палец)
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
             const rect = canvas.getBoundingClientRect();
+            
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            state.startX = (clientX - rect.left) * scaleX;
+            state.startY = (clientY - rect.top) * scaleY;
+
+            if (state.tool === 'zoomIn' || state.tool === 'zoomOut') {
+                adjustZoom(state.tool === 'zoomIn' ? 0.3 : -0.3, {clientX, clientY}); 
+                return;
+            }
+
             if (!state.palettePinned) {
                 const cp = document.getElementById('dyatlo-color-panel-overlay');
                 if (cp) cp.remove();
             }
+
             state.isDrawing = true;
-            state.startX = e.clientX - rect.left;
-            state.startY = e.clientY - rect.top;
+
             if (e.shiftKey || state.tool === 'fill') {
                 const rgb = state.color.match(/[A-Za-z0-9]{2}/g).map(h => parseInt(h, 16));
                 floodFill(Math.floor(state.startX), Math.floor(state.startY), rgb);
@@ -1917,7 +2235,6 @@
                 ctx.beginPath();
                 ctx.moveTo(state.startX, state.startY);
                 ctx.lineTo(state.startX, state.startY); 
-                
                 ctx.lineWidth = state.lineWidth;
                 if (state.tool === 'eraser') {
                     ctx.globalCompositeOperation = 'destination-out';
@@ -1935,9 +2252,17 @@
 
         const handleMove = (e) => {
             if (!state.isDrawing) return;
+            if (e.cancelable && e.touches) e.preventDefault();
+
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
             const rect = canvas.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const x = (clientX - rect.left) * scaleX;
+            const y = (clientY - rect.top) * scaleY;
+
             if (state.tool === 'brush' || state.tool === 'eraser') {
                 ctx.lineTo(x, y); ctx.stroke();
             } else {
@@ -1956,17 +2281,46 @@
 
         const handleEnd = () => { if (state.isDrawing) { state.isDrawing = false; saveHistory(); } };
         const brushCursor = document.getElementById('itd-brush-cursor');
+        
         const updateCursor = (e) => {
-			if (!brushCursor || state.tool === 'fill' || !state.dynamicCursor) {
-				if (brushCursor) brushCursor.style.display = 'none';
-				return;
-			}
-			brushCursor.style.display = 'block';
-			brushCursor.style.left = e.clientX + 'px';
-			brushCursor.style.top = e.clientY + 'px';
-			brushCursor.style.width = state.lineWidth + 'px';
-			brushCursor.style.height = state.lineWidth + 'px';
-		};
+            // 1. Умная проверка: если это палец/стилус ИЛИ включен флаг isTouch - прячем кружок
+            if (e.pointerType === 'touch' || e.pointerType === 'pen' || state.isTouch) {
+                if (brushCursor) brushCursor.style.display = 'none';
+                return;
+            }
+
+            // 2. Если курсора нет или включены несовместимые инструменты - прячем
+            if (!brushCursor || state.tool === 'fill' || state.isPipetteActive || !state.dynamicCursor) {
+                if (brushCursor) brushCursor.style.display = 'none';
+                return;
+            }
+
+            // 3. Показываем кружок для мыши и задаем его координаты с учетом зума
+            brushCursor.style.display = 'block';
+            brushCursor.style.left = e.clientX + 'px';
+            brushCursor.style.top = e.clientY + 'px';
+            
+            // Умножаем базовый размер кисти на текущий масштаб отрисовки
+            const scaledSize = state.lineWidth * currentRenderZoom;
+            brushCursor.style.width = scaledSize + 'px';
+            brushCursor.style.height = scaledSize + 'px';
+        };
+
+        // Заменяем устаревшие события mouse на современные pointer-события
+        canvas.addEventListener('pointermove', updateCursor);
+        
+        canvas.addEventListener('pointerenter', (e) => { 
+            // Не показываем при входе, если это палец
+            if (e.pointerType === 'touch' || e.pointerType === 'pen' || state.isTouch) return;
+            
+            if (!state.isPreview && state.tool !== 'fill' && state.dynamicCursor) {
+                if (brushCursor) brushCursor.style.display = 'block';
+            } 
+        });
+        
+        canvas.addEventListener('pointerleave', () => { 
+            if (brushCursor) brushCursor.style.display = 'none'; 
+        });
         canvas.addEventListener('mousemove', updateCursor);
         canvas.addEventListener('mouseenter', () => { 
             if (!state.isPreview && state.tool !== 'fill' && state.dynamicCursor) {
@@ -1979,6 +2333,10 @@
         canvas.addEventListener('mousedown', handleStart);
         window.addEventListener('mousemove', handleMove);
         window.addEventListener('mouseup', handleEnd);
+		canvas.addEventListener('touchstart', handleStart, { passive: false });
+        window.addEventListener('touchmove', handleMove, { passive: false });
+        window.addEventListener('touchend', handleEnd);
+        window.addEventListener('touchcancel', handleEnd);
 
         modal.querySelector('#itd-btn-footer-save').onclick = (e) => {
             const saveLogic = async () => {
@@ -1991,25 +2349,53 @@
                 loader.className = 'itd-loading-blocker';
                 loader.innerHTML = `
                     <div class="itd-loading-spinner"></div>
-                    <div style="font-size: 18px; font-weight: 600;">Подождите, идет загрузка...</div>
-                    <div style="font-size: 13px; color: #8e8e93;">Ваш баннер обновляется</div>
+                    <div style="font-size: 18px; font-weight: 600;">Подождите, идет обработка...</div>
+                    <div style="font-size: 13px; color: #8e8e93;">Ваш рисунок переносится на сайт</div>
                 `;
                 
-                // Блокируем кнопку и добавляем оверлей
                 btn.disabled = true;
                 btn.innerText = "Загрузка...";
                 container.appendChild(loader);
+
+                // --- ИСПРАВЛЕНИЕ 1: Создаем временный холст с белым фоном ---
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = canvas.width;
+                tempCanvas.height = canvas.height;
+                const tempCtx = tempCanvas.getContext('2d');
                 
-                canvas.toBlob(async (blob) => {
+                // Заливаем фон белым цветом
+                tempCtx.fillStyle = '#FFFFFF';
+                tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+                
+                // Отрисовываем текущий рисунок поверх белого фона
+                tempCtx.drawImage(canvas, 0, 0);
+
+                // Используем tempCanvas.toBlob вместо canvas.toBlob
+                tempCanvas.toBlob(async (blob) => {
                     try {
-                        await uploadToAPI(blob);
-                        btn.innerText = "Готово!";
-                        // При успехе оставляем оверлей до перезагрузки
-                        setTimeout(() => { location.reload(); }, 500);
+                        if (state.mode === 'banner') {
+                            // РЕЖИМ БАННЕРА: грузим через API и обновляем страницу
+                            await uploadToAPI(blob);
+                            btn.innerText = "Готово!";
+                            setTimeout(() => { location.reload(); }, 500);
+                        } else {
+                            // РЕЖИМ ПОСТА: передаем картинку в форму сайта и закрываем рисовалку
+                            await uploadToPost(blob);
+                            btn.innerText = "Готово!";
+                            setTimeout(() => { 
+                                loader.remove();
+                                
+                                // --- ИСПРАВЛЕНИЕ 2: Временно отключаем предупреждение перед выходом ---
+                                const prevConfirm = state.showConfirmations; // запоминаем текущую настройку юзера
+                                state.showConfirmations = false; // выключаем предупреждение
+                                document.querySelector('#itd-btn-footer-cancel').click(); // закрываем окно
+                                state.showConfirmations = prevConfirm; // возвращаем настройку обратно
+                                
+                            }, 500);
+                        }
                     } catch (err) {
-                        // В случае ошибки убираем блокировку
                         loader.remove();
-                        alert("Ошибка загрузки: " + err.message);
+                        alert("Ошибка: " + err.message);
                         btn.disabled = false;
                         btn.innerText = originalText;
                     }
@@ -2073,13 +2459,13 @@
         let isDragging = false, isResizing = false, startX, startY, startParams;
         let activeHandle = null; // Запоминаем за какой угол тянем
 
-        cropLayer.onmousedown = (e) => {
+        const handleCropStart = (e) => {
             const wrapper = cropLayer.querySelector('.itd-crop-canvas-wrapper');
             if (!wrapper) return;
             
             const handle = e.target.closest('.crop-handle');
-            startX = e.clientX;
-            startY = e.clientY;
+            startX = e.touches ? e.touches[0].clientX : e.clientX;
+            startY = e.touches ? e.touches[0].clientY : e.clientY;
             startParams = { ...state.cropParams };
 
             if (handle) {
@@ -2090,12 +2476,18 @@
             }
             e.stopPropagation();
         };
+		cropLayer.onmousedown = handleCropStart;
+        cropLayer.ontouchstart = handleCropStart;
 
-        window.addEventListener('mousemove', (e) => {
+        const handleCropMove = (e) => {
             if (!state.isCropping || (!isDragging && !isResizing)) return;
+			if (e.cancelable && e.touches) e.preventDefault();
+			
+			const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
             
-            const dx = e.clientX - startX;
-            const dy = e.clientY - startY;
+            const dx = clientX - startX;
+            const dy = clientY - startY;
 
             if (isDragging) {
                 state.cropParams.x = startParams.x + dx;
@@ -2158,12 +2550,17 @@
                 state.cropParams.y = newY;
             }
             updateCropUI();
-        });
+        };
 
-        window.addEventListener('mouseup', () => { 
+        window.addEventListener('mousemove', handleCropMove, { passive: false });
+        window.addEventListener('touchmove', handleCropMove, { passive: false });
+
+        const handleCropEnd = () => { 
             isDragging = isResizing = false; 
             activeHandle = null;
-        });
+        };
+        window.addEventListener('mouseup', handleCropEnd);
+        window.addEventListener('touchend', handleCropEnd);
 		cropLayer.addEventListener('wheel', (e) => {
 			if (!state.isCropping) return;
 			e.preventDefault(); // Запрещаем прокрутку страницы
@@ -2196,27 +2593,44 @@
 		}, { passive: false });
     }
 
-    // --- ОБНОВЛЕННАЯ ЛОГИКА ВСТАВКИ КНОПКИ (ЛЕВЕЕ ОРИГИНАЛА) ---
     function injectLauncher() {
-        if (document.getElementById('itd-draw-trigger')) return;
+        // 1. Логика для старой кнопки (Баннер профиля)
+        if (!document.getElementById('itd-draw-trigger-banner')) {
+            const bannerBtn = document.querySelector('button[title="Нарисовать баннер"]');
+            if (bannerBtn) {
+                const myBtn = bannerBtn.cloneNode(true);
+                myBtn.id = 'itd-draw-trigger-banner';
+                myBtn.classList.add('itd-custom-draw-btn');
+                myBtn.title = "ITD ART — Баннер";
+                bannerBtn.before(myBtn); // Вставляем ДО оригинальной
+                myBtn.onclick = (e) => { e.preventDefault(); openModal('banner'); };
+            }
+        }
 
-        // Ищем оригинальную кнопку рисования
-        const originalBtn = document.querySelector('button[title="Нарисовать баннер"]');
+        // 2. НОВАЯ логика для кнопки в ленте/постах (после палитры)
+        if (!document.getElementById('itd-draw-trigger-post')) {
+            // Ищем кнопку по title из вашего HTML-кода
+            const postBtn = document.querySelector('button[title="Нарисовать"]');
+            
+            if (postBtn) {
+                // Копируем оригинальную кнопку со всеми классами (чтобы дизайн совпадал)
+                const myBtn = postBtn.cloneNode(true);
+                myBtn.id = 'itd-draw-trigger-post';
+                myBtn.classList.add('itd-custom-draw-btn');
+                myBtn.title = "ITD ART — Рисунок в пост";
+                
+                // Принудительно красим иконку в синий цвет, чтобы она отличалась от стандартной палитры
+                myBtn.style.color = '#0a84ff';
 
-        if (originalBtn) {
-            // Создаем нашу кнопку на базе оригинальной
-            const myBtn = originalBtn.cloneNode(true);
-            myBtn.id = 'itd-draw-trigger';
-            myBtn.classList.add('itd-custom-draw-btn');
-            myBtn.title = "ITD ART — Новый редактор";
+                // Вставляем нашу кнопку ПОСЛЕ оригинальной (справа от нее)
+                postBtn.after(myBtn);
 
-            // Вставляем нашу кнопку СЛЕВА от оригинальной
-            originalBtn.before(myBtn);
-
-            myBtn.onclick = (e) => {
-                e.preventDefault();
-                openModal();
-            };
+                // Вешаем вызов вашего модального окна
+                myBtn.onclick = (e) => {
+                    e.preventDefault();
+                    openModal('post');
+                };
+            }
         }
     }
 
