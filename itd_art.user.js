@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ITD ART
 // @namespace    http://tampermonkey.net/
-// @version      2.2
+// @version      2.3
 // @description  Новое окно рисования с расширением функционала. Новости и обновления: https://t.me/itd_art
 // @author       TheBreakHikita
 // @match        https://xn--d1ah4a.com/*
@@ -26,10 +26,15 @@
         history: [],
         historyStep: -1,
 		showConfirmations: localStorage.getItem('itd_show_confirmations') !== 'false',
+		dynamicCursor: localStorage.getItem('itd_dynamic_cursor') !== 'false',
 		isPreview: false,
 		isCropping: false,
         cropImg: null,
         cropParams: { x: 0, y: 0, w: 0, h: 0, ratio: true },
+		autoSaveEnabled: localStorage.getItem('itd_auto_save') !== 'false',
+        autoSaveTimer: null,
+		autoSaveInterval: parseInt(localStorage.getItem('itd_auto_save_interval')) || 60,
+		saveIndicatorEnabled: localStorage.getItem('itd_save_indicator') !== 'false',
     };
 
     let canvas, ctx, overlayCanvas, oCtx, snapshot;
@@ -420,56 +425,69 @@
         #main-canvas {
             cursor: none !important; /* Скрываем стандартный курсор над холстом */
         }
-        /* Кнопка с числом */
         .itd-size-dynamic {
             width: 36px; height: 36px; 
-            border: 2px solid #3a3a3c; 
-            border-radius: 50%;
+            border: 1px solid #3a3a3c; 
+            border-radius: 8px;
             display: flex; align-items: center; justify-content: center;
-            color: #ebebf5; font-size: 13px; font-weight: 800; 
-            cursor: pointer; transition: 0.2s; background: #1a1a1a;
+            color: #ebebf5; font-size: 12px; font-weight: 700; 
+            cursor: pointer; transition: 0.2s; background: #2c2c2e;
             position: relative;
+            box-sizing: border-box;
         }
-        .itd-size-dynamic.active { border-color: #0a84ff; color: #0a84ff; }
-        .itd-size-dynamic:hover { background: #2c2c2e; }
+        .itd-size-dynamic.active { border-color: #0a84ff; color: #0a84ff; background: rgba(0, 122, 255, 0.1); }
+        .itd-size-dynamic:hover { background: #3a3a3c; border-color: #48484a; }
 
-        /* Всплывающее окно над кнопкой */
+        /* Новое современное окно */
         .itd-size-popup {
-            position: fixed; /* Изменено с absolute на fixed */
-            background: #2c2c2e;
-            border: 1px solid #3a3a3c;
-            padding: 12px;
-            border-radius: 10px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+            position: fixed;
+            background: rgba(28, 28, 30, 0.95);
+            backdrop-filter: blur(15px);
+            border: 1px solid #48484a;
+            padding: 16px;
+            border-radius: 14px;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.6);
             display: none; 
             flex-direction: column;
             align-items: center;
-            gap: 8px;
-            z-index: 2000005; /* Поверх всех окон */
+            gap: 12px;
+            z-index: 2000005;
             pointer-events: all;
+            animation: itdFadeIn 0.2s ease-out;
+        }
+        @keyframes itdFadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
         .itd-size-popup.show { display: flex; }
         
-        /* Треугольник внизу окошка */
-        .itd-size-popup::after {
-            content: '';
-            position: absolute;
-            top: 100%; left: 50%;
-            transform: translateX(-50%);
-            border: 8px solid transparent;
-            border-top-color: #2c2c2e;
+        /* Заголовок в окошке */
+        .itd-size-popup-header {
+            display: flex; justify-content: space-between; width: 100%;
+            color: #8e8e93; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
         }
 
-        .itd-size-popup span { color: #8e8e93; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+        /* Контейнер управления (минус, слайдер, плюс) */
+        .itd-size-controls { display: flex; align-items: center; gap: 10px; }
+        .itd-size-step-btn {
+            width: 28px; height: 28px; border-radius: 6px; border: none;
+            background: #3a3a3c; color: white; cursor: pointer;
+            display: flex; align-items: center; justify-content: center; font-size: 16px; transition: 0.2s;
+        }
+        .itd-size-step-btn:hover { background: #48484a; }
+        .itd-size-step-btn:active { transform: scale(0.9); }
 
-        /* Стили ползунка */
+        /* Ползунок */
         .itd-range-input {
             -webkit-appearance: none;
-            width: 140px; height: 4px;
-            background: #48484a;
-            border-radius: 2px;
-            outline: none;
-            cursor: pointer;
+            width: 130px; height: 4px;
+            background: #48484a; border-radius: 2px; outline: none;
+        }
+        .itd-range-input::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 18px; height: 18px;
+            background: #0a84ff; border-radius: 50%;
+            box-shadow: 0 0 10px rgba(0,0,0,0.5); border: 2px solid #fff; cursor: pointer;
         }
         .itd-range-input::-webkit-slider-thumb {
             -webkit-appearance: none;
@@ -478,80 +496,267 @@
             border-radius: 50%;
             box-shadow: 0 0 5px rgba(0,0,0,0.3);
         }
+        .itd-editor-container.cropping,
+        .canvas-wrapper.cropping {
+            overflow: visible !important;
+        }
+        
         .itd-crop-overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.6); display: none; z-index: 10;
-            flex-direction: column; align-items: center; justify-content: center;
-			overflow: hidden;
+            display: none; z-index: 50;
         }
-        .itd-crop-overlay.active { display: flex; }
-        /* Обновленные стили панели кадрирования */
-        .itd-crop-controls {
-            position: absolute; 
-            bottom: 30px; 
-            left: 50%; 
-            transform: translateX(-50%);
-            background: #1c1c1e; 
-            padding: 10px 16px; 
-            border-radius: 14px;
-            display: flex; 
-            align-items: center; 
-            gap: 12px; 
-            border: 1px solid #3a3a3c;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.6); 
-            z-index: 100;
-            min-width: 400px; /* Фиксированная минимальная ширина */
-            justify-content: space-between;
+        .itd-crop-overlay.active { display: block; }
+
+        /* 1. Темный фон ВОКРУГ холста (box-shadow не пускает тень внутрь холста) */
+        .itd-crop-backdrop {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            box-shadow: 0 0 0 9999px rgba(0,0,0,0.85);
+            pointer-events: none; z-index: 1;
         }
-        .itd-crop-label {
-            color: #ebebf5; 
-            font-size: 13px; 
-            display: flex; 
-            align-items: center; 
-            gap: 8px; 
-            cursor: pointer;
-            user-select: none;
-            padding-right: 12px;
-            border-right: 1px solid #3a3a3c;
-            height: 30px;
-        }
-        .itd-crop-label input {
-            width: 16px; height: 16px; cursor: pointer;
-        }
-        .itd-crop-btn-group {
-            display: flex;
-            gap: 8px;
-        }
-        /* Уточняем размеры кнопок внутри группы */
-        .itd-crop-controls .itd-btn {
-            padding: 8px 16px;
-            font-size: 13px;
-            height: 36px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
+        
+        /* 2. Картинка (будет летать над тёмным фоном, но ПОД пунктиром) */
         .itd-crop-canvas-wrapper {
-            position: relative; border: 2px solid #0a84ff; cursor: move;
-            background-image: 
-                linear-gradient(45deg, #444 25%, transparent 25%), 
-                linear-gradient(-45deg, #444 25%, transparent 25%), 
-                linear-gradient(45deg, transparent 75%, #444 75%), 
-                linear-gradient(-45deg, transparent 75%, #444 75%);
-            background-size: 10px 10px;
+            position: absolute; cursor: move; z-index: 2;
+            border: none; /* Убрали старую рамку у самой картинки */
         }
+        
+        /* 3. Синий пунктир строго по контуру холста (ПОВЕРХ картинки) */
+        .itd-crop-dashed {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            border: 2px dashed #0a84ff;
+            pointer-events: none; z-index: 3;
+        }
+
+        /* Ручки масштабирования (z-index 15, чтобы всегда можно было ухватить) */
         .crop-handle {
             position: absolute; width: 14px; height: 14px; background: #0a84ff;
-            border: 2px solid #fff; border-radius: 50%;
+            border: 2px solid #fff; border-radius: 50%; z-index: 15;
         }
+        .handle-nw { left: -7px; top: -7px; cursor: nwse-resize; }
+        .handle-ne { right: -7px; top: -7px; cursor: nesw-resize; }
+        .handle-sw { left: -7px; bottom: -7px; cursor: nesw-resize; }
         .handle-se { right: -7px; bottom: -7px; cursor: nwse-resize; }
+
+        .itd-crop-controls {
+            position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+            background: #1c1c1e; padding: 10px 16px; border-radius: 14px;
+            display: flex; align-items: center; gap: 12px; border: 1px solid #3a3a3c;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.8); z-index: 1000; min-width: 400px; justify-content: space-between;
+        }
+        .itd-crop-label { color: #ebebf5; font-size: 13px; display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; padding-right: 12px; border-right: 1px solid #3a3a3c; height: 30px; }
+        .itd-crop-label input { width: 16px; height: 16px; cursor: pointer; }
+        .itd-crop-btn-group { display: flex; gap: 8px; }
+        .itd-crop-controls .itd-btn { padding: 8px 16px; font-size: 13px; height: 36px; display: flex; align-items: center; justify-content: center; }
+        .handle-se { right: -7px; bottom: -7px; cursor: nwse-resize; }
+		.itd-archive-list {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            max-height: 400px;
+            overflow-y: auto;
+            padding: 10px;
+        }
+        .itd-archive-item {
+            background: #2c2c2e;
+            border: 1px solid #3a3a3c;
+            border-radius: 8px;
+            padding: 8px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .itd-archive-item:hover { border-color: #0a84ff; background: #3a3a3c; }
+        .itd-archive-item img { width: 100%; border-radius: 4px; margin-bottom: 6px; background: #fff; }
+        .itd-archive-item span { color: #8e8e93; font-size: 11px; display: block; text-align: center; }
+		/* Анимация раскрытия интервала автосохранения */
+		.itd-settings-collapsible {
+			max-height: 0;
+			overflow: hidden;
+			transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+			opacity: 0;
+			background: #242426; /* Чуть темнее основного фона для эффекта вложенности */
+			border-radius: 0 0 10px 10px;
+			margin-top: -8px;
+			margin-bottom: 8px;
+		}
+		.itd-settings-collapsible.expanded {
+			max-height: 120px; /* Достаточно для одной строки */
+			opacity: 1;
+			padding: 12px 16px;
+			margin-bottom: 8px;
+		}
+		/* Скругление углов родителя, когда открыто подменю */
+		.itd-settings-item.has-sub.expanded {
+			border-bottom-left-radius: 0;
+			border-bottom-right-radius: 0;
+			margin-bottom: 0;
+		}
+		.itd-archive-item { position: relative; }
+        .itd-archive-download-btn {
+            position: absolute; top: 8px; right: 8px;
+            background: rgba(0,0,0,0.6); color: #fff;
+            border: none; border-radius: 6px; padding: 6px;
+            cursor: pointer; opacity: 0; transition: 0.2s;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .itd-archive-item:hover .itd-archive-download-btn { opacity: 1; }
+        .itd-archive-download-btn:hover { background: #0a84ff; }
+        .itd-btn-danger { background: #3a3a3c; color: #ff3b30; display: flex; align-items: center; gap: 8px; }
+        .itd-btn-danger:hover { background: #ff3b30; color: #fff; }
+		@keyframes itd-save-flash {
+			0% { background: #3a3a3c; }
+			50% { background: rgba(255, 214, 10, 0.3); }
+			100% { background: #3a3a3c; }
+		}
+		.itd-save-anim {
+			animation: itd-save-flash 1.5s ease-in-out;
+		}
+        .itd-archive-item.pinned {
+            border: 2px solid #ffd60a !important;
+            box-shadow: 0 0 15px rgba(255, 214, 10, 0.3);
+        }
+        .itd-archive-pin-btn {
+            position: absolute; top: 8px; left: 8px;
+            background: rgba(0,0,0,0.6); color: #8e8e93;
+            border: none; border-radius: 6px; padding: 6px;
+            cursor: pointer; opacity: 1; transition: 0.3s;
+            display: flex; align-items: center; justify-content: center;
+            z-index: 10;
+        }
+        .itd-archive-item.pinned .itd-archive-pin-btn {
+            color: #ffd60a;
+            background: rgba(0,0,0,0.8);
+        }
+        .itd-archive-item.pinned .itd-archive-pin-btn svg {
+            fill: #ffd60a; /* Заливка звезды цветом */
+            filter: drop-shadow(0 0 5px rgba(255, 214, 10, 0.5));
+            transform: scale(1.1);
+        }
+        .itd-archive-pin-btn svg {
+            transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+        .itd-archive-pin-btn:hover { background: #3a3a3c; color: #fff; }
+        .itd-archive-pin-btn:hover { background: #3a3a3c; color: #fff; }
+		/* Оверлей загрузки */
+        .itd-loading-blocker {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(2px);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000000;
+            border-radius: 12px;
+            color: #fff;
+            gap: 15px;
+            cursor: wait;
+        }
+        .itd-loading-spinner {
+            width: 40px; height: 40px;
+            border: 4px solid rgba(255,255,255,0.1);
+            border-top: 4px solid #0a84ff;
+            border-radius: 50%;
+            animation: itd-spin 1s linear infinite;
+        }
+        @keyframes itd-spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     `;
 
     const styleSheet = document.createElement("style");
     styleSheet.innerText = styles;
     document.head.appendChild(styleSheet);
 
-    // --- ЛОГИКА РИСОВАНИЯ (БЕЗ ИЗМЕНЕНИЙ) ---
+	// --- ЛОГИКА АВТОСОХРАНЕНИЯ (IndexedDB) ---
+    const DB_NAME = 'ITD_ART_ARCHIVE';
+    const STORE_NAME = 'autosaves';
+
+    function initDB() {
+        return new Promise((resolve) => {
+            const request = indexedDB.open(DB_NAME, 1);
+            request.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains(STORE_NAME)) {
+                    db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+                }
+            };
+            request.onsuccess = (e) => resolve(e.target.result);
+        });
+    }
+
+    async function saveToArchive() {
+        if (!state.isOpen || !canvas) return;
+        const db = await initDB();
+        const transaction = db.transaction(STORE_NAME, 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+        
+        const allRecords = await new Promise(r => {
+            const req = store.getAll();
+            req.onsuccess = () => r(req.result);
+        });
+
+        if (allRecords.length >= 10) {
+            // Ищем незакрепленные, чтобы удалить самое старое из них
+            const unpinned = allRecords.filter(r => !r.isPinned);
+            if (unpinned.length > 0) {
+                store.delete(unpinned[0].id);
+            } else {
+                return; // Если всё закреплено, не сохраняем (лимит 10)
+            }
+        }
+
+        const data = {
+            image: canvas.toDataURL('image/png'),
+            date: new Date().toLocaleString(),
+            isPinned: false 
+        };
+        store.add(data);
+        
+        if (state.saveIndicatorEnabled) {
+            const archiveBtn = document.querySelector('.itd-btn-archive');
+            if (archiveBtn) {
+                archiveBtn.classList.remove('itd-save-anim');
+                void archiveBtn.offsetWidth;
+                archiveBtn.classList.add('itd-save-anim');
+            }
+        }
+    }
+
+    async function getArchive() {
+        const db = await initDB();
+        return new Promise(r => {
+            const req = db.transaction(STORE_NAME).objectStore(STORE_NAME).getAll();
+            req.onsuccess = () => r(req.result.reverse()); // Сначала новые
+        });
+    }
+	
+	async function clearArchive() {
+        const db = await initDB();
+        const transaction = db.transaction(STORE_NAME, 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+        
+        const allRecords = await new Promise(r => {
+            const req = store.getAll();
+            req.onsuccess = () => r(req.result);
+        });
+
+        allRecords.forEach(record => {
+            if (!record.isPinned) store.delete(record.id);
+        });
+        
+        return new Promise(r => { transaction.oncomplete = () => r(); });
+    }
+
+    function startAutoSaveTimer() {
+    if (state.autoSaveTimer) clearInterval(state.autoSaveTimer);
+    if (state.autoSaveEnabled) {
+        state.autoSaveTimer = setInterval(() => {
+            if (state.isOpen) saveToArchive();
+        }, state.autoSaveInterval * 1000); // Используем значение из настроек (в мс)
+    }
+}
 
     function saveHistory() {
         state.historyStep++;
@@ -904,12 +1109,18 @@
     });
 
     // Пипетка (адаптирована под ваш canvas)
+    // Пипетка (адаптирована под ваш canvas)
     overlay.querySelector('#cp-pipette').onclick = () => {
         const mainCanvas = document.getElementById('main-canvas');
+        const brushCursor = document.getElementById('itd-brush-cursor'); // Находим наш круглый курсор
         if (!mainCanvas) return;
         
         const btn = overlay.querySelector('#cp-pipette');
         btn.classList.add('active');
+        
+        // 1. ПРИ АКТИВАЦИИ: Скрываем круг кисти и ставим стандартный крестик
+        if (brushCursor) brushCursor.style.display = 'none';
+        mainCanvas.style.setProperty('cursor', 'crosshair', 'important');
         
         const pick = (ev) => {
             const r = mainCanvas.getBoundingClientRect();
@@ -922,11 +1133,19 @@
             
             updateUI();
             btn.classList.remove('active');
-            mainCanvas.style.cursor = 'crosshair';
+
+            // 2. ПОСЛЕ ВЫБОРА: Возвращаем настройки курсора в зависимости от текущего инструмента
+            if (state.dynamicCursor && state.tool !== 'fill') {
+                mainCanvas.style.setProperty('cursor', 'none', 'important');
+                if (brushCursor) brushCursor.style.display = 'block';
+            } else {
+                mainCanvas.style.setProperty('cursor', 'crosshair', 'important');
+            }
+
             mainCanvas.removeEventListener('mousedown', pick, { capture: true });
         };
         
-        mainCanvas.style.cursor = 'help';
+        // Удаляем старую строку mainCanvas.style.cursor = 'help';
         mainCanvas.addEventListener('mousedown', pick, { capture: true });
     };
 
@@ -996,16 +1215,11 @@
         overlay.className = 'itd-confirm-overlay';
         overlay.innerHTML = `
             <div class="itd-confirm-modal" style="width: 420px; text-align: left; padding: 0; overflow: hidden;">
-                <!-- Шапка -->
                 <div class="itd-settings-header" style="padding: 20px 24px; margin-bottom: 0;">
                     <div class="itd-settings-title">Настройки</div>
                     <button class="itd-settings-close-x" id="settings-x">✕</button>
                 </div>
-
-                <!-- Верхняя линия -->
                 <div class="itd-settings-divider"></div>
-
-                <!-- Тело настроек -->
                 <div class="itd-settings-body" style="padding: 16px 24px;">
                     <div class="itd-settings-item">
                         <span>Подтверждение при выходе и сохранении</span>
@@ -1014,13 +1228,40 @@
                             <span class="itd-slider"></span>
                         </label>
                     </div>
-                    <!-- Тут можно добавлять новые блоки .itd-settings-item аналогично -->
+                    <div class="itd-settings-item">
+                        <span>Динамический курсор</span>
+                        <label class="itd-switch">
+                            <input type="checkbox" id="setting-cursor" ${state.dynamicCursor ? 'checked' : ''}>
+                            <span class="itd-slider"></span>
+                        </label>
+                    </div>
+				<div class="itd-settings-item has-sub ${state.autoSaveEnabled ? 'expanded' : ''}" id="autosave-parent">
+					<span>Авто-сохранение рисунка</span>
+					<label class="itd-switch">
+						<input type="checkbox" id="setting-autosave" ${state.autoSaveEnabled ? 'checked' : ''}>
+						<span class="itd-slider"></span>
+					</label>
+				</div>
+				<div class="itd-settings-collapsible ${state.autoSaveEnabled ? 'expanded' : ''}" id="autosave-child">
+					<div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
+						<span style="font-size: 13px; color: #8e8e93;">Интервал сохранения:</span>
+						<div style="display: flex; align-items: center; gap: 8px;">
+							<input type="number" id="setting-autosave-interval" class="dyatlo-input-tiny" 
+								   style="width: 65px; background: rgba(0,0,0,0.5);" 
+								   min="5" max="3600" value="${state.autoSaveInterval}">
+							<span style="font-size: 12px; color: #8e8e93;">сек</span>
+						</div>
+					</div>
+					<div style="display: flex; align-items: center; justify-content: space-between; width: 100%; margin-top: 12px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.05);">
+					<span style="font-size: 13px; color: #8e8e93;">Индикатор сохранения:</span>
+					<label class="itd-switch">
+						<input type="checkbox" id="setting-save-indicator" ${state.saveIndicatorEnabled ? 'checked' : ''}>
+						<span class="itd-slider"></span>
+					</label>
+				</div>
+				</div>
                 </div>
-
-                <!-- Нижняя линия -->
                 <div class="itd-settings-divider"></div>
-
-                <!-- Футер -->
                 <div class="itd-confirm-buttons" style="padding: 16px 24px; justify-content: flex-end;">
                     <button class="itd-btn itd-btn-confirm-no" id="settings-close" style="width: 100px;">Закрыть</button>
                 </div>
@@ -1032,10 +1273,194 @@
         overlay.querySelector('#settings-x').onclick = close;
         overlay.querySelector('#settings-close').onclick = close;
         
-        const checkbox = overlay.querySelector('#setting-confirm');
-        checkbox.onchange = (e) => {
+        // 1. Подтверждения
+        overlay.querySelector('#setting-confirm').onchange = (e) => {
             state.showConfirmations = e.target.checked;
             localStorage.setItem('itd_show_confirmations', e.target.checked);
+        };
+
+        // 2. Динамический курсор
+        overlay.querySelector('#setting-cursor').onchange = (e) => {
+            state.dynamicCursor = e.target.checked;
+            localStorage.setItem('itd_dynamic_cursor', e.target.checked);
+
+            const brushCursor = document.getElementById('itd-brush-cursor');
+            const mainCanvas = document.getElementById('main-canvas');
+            if (!mainCanvas) return;
+
+            if (state.dynamicCursor) {
+                if (state.tool !== 'fill') {
+                    mainCanvas.style.setProperty('cursor', 'none', 'important');
+                    if (brushCursor) brushCursor.style.display = 'block';
+                }
+            } else {
+                mainCanvas.style.setProperty('cursor', 'crosshair', 'important');
+                if (brushCursor) brushCursor.style.display = 'none';
+            }
+        };
+
+        // 3. Логика автосохранения (Переключатель + Интервал)
+		const autoSaveCheck = overlay.querySelector('#setting-autosave');
+		const autoSaveChild = overlay.querySelector('#autosave-child');
+		const autoSaveParent = overlay.querySelector('#autosave-parent');
+		const intervalInput = overlay.querySelector('#setting-autosave-interval');
+
+		autoSaveCheck.onchange = (e) => {
+			const isChecked = e.target.checked;
+			state.autoSaveEnabled = isChecked;
+			localStorage.setItem('itd_auto_save', isChecked);
+			
+			// Управление анимацией
+			if (isChecked) {
+				autoSaveChild.classList.add('expanded');
+				autoSaveParent.classList.add('expanded');
+			} else {
+				autoSaveChild.classList.remove('expanded');
+				autoSaveParent.classList.remove('expanded');
+			}
+			
+			startAutoSaveTimer();
+		};
+
+		intervalInput.onchange = (e) => {
+			let val = parseInt(e.target.value);
+			
+			// Валидация: минимум 5, максимум 3600
+			if (isNaN(val) || val < 5) val = 5;
+			if (val > 3600) val = 3600;
+			
+			e.target.value = val;
+			state.autoSaveInterval = val;
+			localStorage.setItem('itd_auto_save_interval', val);
+			
+			// Перезапуск таймера с новым временем, если функция включена
+			if (state.autoSaveEnabled) {
+				startAutoSaveTimer();
+			}
+		};
+		overlay.querySelector('#setting-save-indicator').onchange = (e) => {
+            state.saveIndicatorEnabled = e.target.checked;
+            localStorage.setItem('itd_save_indicator', e.target.checked);
+        };
+    }
+	
+	async function showArchiveDialog() {
+        const saves = await getArchive();
+        const overlay = document.createElement('div');
+        overlay.className = 'itd-confirm-overlay';
+        overlay.innerHTML = `
+            <div class="itd-confirm-modal" style="width: 500px; text-align: left; padding: 0;">
+                <div class="itd-settings-header" style="padding: 20px 24px; margin-bottom: 0;">
+                    <div class="itd-settings-title">История автосохранений</div>
+                    <button class="itd-settings-close-x" id="archive-x">✕</button>
+                </div>
+                <div class="itd-settings-divider"></div>
+                <div class="itd-archive-list">
+                    ${saves.length ? saves.map(s => `
+                        <div class="itd-archive-item ${s.isPinned ? 'pinned' : ''}" data-id="${s.id}">
+                            <img src="${s.image}">
+                            
+                            <button class="itd-archive-pin-btn" data-id="${s.id}" title="${s.isPinned ? 'Убрать из избранного' : 'Добавить в избранное'}">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+                                </svg>
+                            </button>
+
+                            <button class="itd-archive-download-btn" data-img="${s.image}" title="Скачать на ПК">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                            </button>
+                            <span>${s.date}</span>
+                        </div>
+                    `).join('') : '<div style="color:#666; grid-column: span 2; text-align:center; padding: 40px;">Записей пока нет...</div>'}
+                </div>
+                <div class="itd-settings-divider"></div>
+                <div class="itd-confirm-buttons" style="padding: 16px 24px; display: flex; justify-content: space-between; align-items: center;">
+                    <button class="itd-btn itd-btn-danger" id="archive-clear-all" title="Очистить всё (кроме избранных)" style="width: 42px; height: 42px; padding: 0; display: flex; align-items: center; justify-content: center; ${!saves.length ? 'display:none' : ''}">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
+                    </button>
+                    <div style="display: flex; gap: 10px;">
+                        <button class="itd-btn" id="archive-manual-save" style="background: #007AFF; color: #fff; display: flex; align-items: center; gap: 8px; padding: 0 20px; height: 42px;">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path>
+                                <polyline points="14 2 14 8 20 8"></polyline>
+                                <line x1="12" y1="18" x2="12" y2="12"></line>
+                                <line x1="9" y1="15" x2="15" y2="15"></line>
+                            </svg>
+                            <span style="font-weight: 600;">Сохранить холст</span>
+                        </button>
+                        <button class="itd-btn itd-btn-confirm-no" id="archive-close" style="height: 42px; padding: 0 20px;">Закрыть</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        const close = () => overlay.remove();
+        overlay.querySelector('#archive-x').onclick = overlay.querySelector('#archive-close').onclick = close;
+
+        // Восстановление на холст
+        overlay.querySelectorAll('.itd-archive-item').forEach(item => {
+            item.onclick = (e) => {
+                if (e.target.closest('button')) return;
+                const img = new Image();
+                img.onload = () => {
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    ctx.drawImage(img, 0, 0);
+                    saveHistory();
+                    close();
+                };
+                img.src = item.querySelector('img').src;
+            };
+        });
+
+        // Скачивание
+        overlay.querySelectorAll('.itd-archive-download-btn').forEach(btn => {
+            btn.onclick = (e) => {
+                e.stopPropagation();
+                const link = document.createElement('a');
+                link.download = `itd-art-save-${Date.now()}.png`;
+                link.href = btn.dataset.img;
+                link.click();
+            };
+        });
+
+        // Кнопка избранного (скрепка)
+        overlay.querySelectorAll('.itd-archive-pin-btn').forEach(btn => {
+            btn.onclick = async (e) => {
+                e.stopPropagation();
+                const id = parseInt(btn.dataset.id);
+                const db = await initDB();
+                const transaction = db.transaction(STORE_NAME, 'readwrite');
+                const store = transaction.objectStore(STORE_NAME);
+                const record = await new Promise(r => {
+                    const req = store.get(id);
+                    req.onsuccess = () => r(req.result);
+                });
+                if (record) {
+                    record.isPinned = !record.isPinned;
+                    store.put(record);
+                    transaction.oncomplete = () => {
+                        overlay.remove();
+                        showArchiveDialog();
+                    };
+                }
+            };
+        });
+
+        // Очистка
+        overlay.querySelector('#archive-clear-all').onclick = () => {
+            showConfirmDialog("Удалить все незакрепленные сохранения?", "Да, удалить", true, async () => {
+                await clearArchive();
+                overlay.remove();
+                showArchiveDialog();
+            });
+        };
+
+        // Ручное сохранение
+        overlay.querySelector('#archive-manual-save').onclick = async () => {
+            await saveToArchive();
+            overlay.remove();
+            showArchiveDialog();
         };
     }
 	
@@ -1071,14 +1496,18 @@
                             <button class="size-btn active" data-size="4"><span class="size-dot" style="width:4px;height:4px"></span></button>
                             <button class="size-btn" data-size="8"><span class="size-dot" style="width:8px;height:8px"></span></button>
                             <button class="size-btn" data-size="12"><span class="size-dot" style="width:12px;height:12px"></span></button>
-                            
-                            <!-- Кнопка динамического размера -->
-                            <div class="itd-size-dynamic" id="itd-size-trigger">
+                            <div class="itd-size-dynamic" id="itd-size-trigger" title="Настроить размер">
                                 <span id="itd-size-val">4</span>
-                                <!-- Всплывающее окошко -->
                                 <div class="itd-size-popup" id="itd-size-pop">
-                                    <span>Размер: <b id="itd-pop-val" style="color:#fff">4</b></span>
-                                    <input type="range" class="itd-range-input" id="itd-size-slider" min="1" max="100" value="4">
+                                    <div class="itd-size-popup-header">
+                                        <span>Размер</span>
+                                        <b id="itd-pop-val" style="color:#0a84ff">4</b>
+                                    </div>
+                                    <div class="itd-size-controls">
+                                        <button class="itd-size-step-btn" id="itd-size-minus">−</button>
+                                        <input type="range" class="itd-range-input" id="itd-size-slider" min="1" max="100" value="4">
+                                        <button class="itd-size-step-btn" id="itd-size-plus">+</button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -1116,25 +1545,30 @@
                             <canvas id="main-canvas" width="1100" height="450"></canvas>
                             <canvas id="overlay-canvas" width="1100" height="450"></canvas>
 							<div id="itd-crop-layer" class="itd-crop-overlay">
-							<div class="itd-crop-controls">
-								<label class="itd-crop-label">
-									<input type="checkbox" id="crop-prop" checked>
-									<span>Сохранять пропорции</span>
-								</label>
-								<div class="itd-crop-btn-group">
-									<button class="itd-btn itd-btn-cancel" id="crop-cancel">Отмена</button>
-									<button class="itd-btn itd-btn-save" id="crop-confirm">Добавить на холст</button>
-								</div>
-							</div>
-							</div>
-						</div>
+                                <div class="itd-crop-backdrop"></div>
+                                <div class="itd-crop-dashed"></div>
+                                <div class="itd-crop-controls">
+                                    <label class="itd-crop-label">
+                                        <input type="checkbox" id="crop-prop" checked>
+                                        <span>Сохранять пропорции</span>
+                                    </label>
+                                    <div class="itd-crop-btn-group">
+                                        <button class="itd-btn itd-btn-cancel" id="crop-cancel">Отмена</button>
+                                        <button class="itd-btn itd-btn-save" id="crop-confirm">Добавить на холст</button>
+                                    </div>
+                                </div>
+                            </div>
                     </div>
+					</div>
                     <div class="itd-footer">
                         <button class="itd-btn itd-btn-settings" title="Настройки">
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
                         </button>
 						<button class="itd-btn itd-btn-settings itd-btn-preview" title="Предпросмотр на сайте">
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                        </button>
+						<button class="itd-btn itd-btn-settings itd-btn-archive" title="История сохранений">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v4l3 3"></path><path d="M3.05 11a9 9 0 1 1 .5 4m-.5 5v-5h5"></path></svg>
                         </button>
                         <div style="flex-grow: 1;"></div>
                         <button class="itd-btn itd-btn-cancel" id="itd-btn-footer-cancel">Отмена</button>
@@ -1225,41 +1659,55 @@
     }
 
 	function updateCropUI() {
-			const layer = document.getElementById('itd-crop-layer');
-			const wrapper = layer.querySelector('.itd-crop-canvas-wrapper') || document.createElement('div');
-			
-			if (!wrapper.parentNode) {
-				wrapper.className = 'itd-crop-canvas-wrapper';
-				wrapper.innerHTML = '<div class="crop-handle handle-se"></div>';
-				layer.appendChild(wrapper);
-			}
+        const layer = document.getElementById('itd-crop-layer');
+        let wrapper = layer.querySelector('.itd-crop-canvas-wrapper');
+        
+        if (!wrapper) {
+            wrapper = document.createElement('div');
+            wrapper.className = 'itd-crop-canvas-wrapper';
+            layer.appendChild(wrapper);
+        }
 
-			const p = state.cropParams;
-			wrapper.style.left = p.x + 'px';
-			wrapper.style.top = p.y + 'px';
-			wrapper.style.width = p.w + 'px';
-			wrapper.style.height = p.h + 'px';
-			wrapper.style.position = 'absolute';
-			
-			// Рисуем превью на временном canvas внутри враппера
-			let tempCanvas = wrapper.querySelector('canvas');
-			if (!tempCanvas) {
-				tempCanvas = document.createElement('canvas');
-				wrapper.appendChild(tempCanvas);
-			}
-			tempCanvas.width = p.w;
-			tempCanvas.height = p.h;
-			const tCtx = tempCanvas.getContext('2d');
-			tCtx.drawImage(state.cropImg, 0, 0, p.w, p.h);
+        // Вставляем ручки и холст только 1 раз
+        if (!wrapper.querySelector('.handle-nw')) {
+            wrapper.innerHTML = `
+                <div class="crop-handle handle-nw" data-handle="nw"></div>
+                <div class="crop-handle handle-ne" data-handle="ne"></div>
+                <div class="crop-handle handle-sw" data-handle="sw"></div>
+                <div class="crop-handle handle-se" data-handle="se"></div>
+                <canvas></canvas>
+            `;
+        }
+
+        const p = state.cropParams;
+        wrapper.style.left = p.x + 'px';
+        wrapper.style.top = p.y + 'px';
+        wrapper.style.width = p.w + 'px';
+        wrapper.style.height = p.h + 'px';
+        
+        let tempCanvas = wrapper.querySelector('canvas');
+        tempCanvas.width = p.w;
+        tempCanvas.height = p.h;
+        tempCanvas.style.width = '100%';
+        tempCanvas.style.height = '100%';
+        tempCanvas.style.display = 'block';
+        
+        const tCtx = tempCanvas.getContext('2d');
+        tCtx.imageSmoothingEnabled = true;
+        tCtx.imageSmoothingQuality = 'high';
+        tCtx.drawImage(state.cropImg, 0, 0, p.w, p.h);
 	}
 
     function attachEvents(modal) {
+		modal.querySelector('.itd-btn-archive').onclick = showArchiveDialog;
+        startAutoSaveTimer(); // Запускаем цикл при открытии редактора
         modal.querySelector('.itd-btn-settings').onclick = showSettingsDialog;
         modal.querySelector('.itd-btn-preview').onclick = () => togglePreviewMode(modal);
         modal.querySelector('#itd-btn-footer-cancel').onclick = () => {
             const closeAll = () => {
                 const brushCursor = document.getElementById('itd-brush-cursor');
                 if (brushCursor) brushCursor.remove();
+				if (state.autoSaveTimer) clearInterval(state.autoSaveTimer);
                 if (state.isPreview) {
                     const bannerImg = document.querySelector('.BLErSWUX img');
                     const profileInfo = document.querySelector('.-D3fn7RS');
@@ -1291,15 +1739,20 @@
                 btn.classList.add('active');
                 state.tool = btn.dataset.tool;
 
-                // Управление курсором
                 const brushCursor = document.getElementById('itd-brush-cursor');
+                const mainCanvas = document.getElementById('main-canvas');
+
                 if (state.tool === 'fill') {
-                    brushCursor.style.display = 'none';
-                    canvas.style.setProperty('cursor', 'crosshair', 'important');
+                    if (brushCursor) brushCursor.style.display = 'none';
+                    mainCanvas.style.setProperty('cursor', 'crosshair', 'important');
                 } else {
-                    canvas.style.setProperty('cursor', 'none', 'important');
-                    // Если мышь уже над холстом, показываем кружок
-                    brushCursor.style.display = 'block';
+                    if (state.dynamicCursor) {
+                        mainCanvas.style.setProperty('cursor', 'none', 'important');
+                        if (brushCursor) brushCursor.style.display = 'block';
+                    } else {
+                        mainCanvas.style.setProperty('cursor', 'crosshair', 'important');
+                        if (brushCursor) brushCursor.style.display = 'none';
+                    }
                 }
             };
         });
@@ -1315,68 +1768,87 @@
         modal.querySelector('#itd-palette-btn').onclick = (e) => {
             toggleColorPanel(e.currentTarget);
         };
-        
         const sizeTrigger = modal.querySelector('#itd-size-trigger'); 
         const sizePopup = modal.querySelector('#itd-size-pop');       
         const sizeSlider = modal.querySelector('#itd-size-slider');   
         const sizeValText = modal.querySelector('#itd-size-val');     
         const popValText = modal.querySelector('#itd-pop-val');       
+        
+        // Находим новые кнопки плюс и минус
+        const btnMinus = modal.querySelector('#itd-size-minus');
+        const btnPlus = modal.querySelector('#itd-size-plus');
 
         const updateBrushSize = (newSize) => {
-            state.lineWidth = parseInt(newSize);
-            sizeValText.innerText = state.lineWidth;
-            popValText.innerText = state.lineWidth;
-            sizeSlider.value = state.lineWidth;
+            let val = Math.max(1, Math.min(100, parseInt(newSize))); // Ограничение 1-100
+            state.lineWidth = val;
+            sizeValText.innerText = val;
+            popValText.innerText = val;
+            sizeSlider.value = val;
 
+            // Подсвечиваем пресеты (2, 4, 8, 12), если выбраны они
             modal.querySelectorAll('.size-btn').forEach(b => {
                 b.classList.toggle('active', parseInt(b.dataset.size) === state.lineWidth);
             });
             
+            // Если выбран кастомный размер, подсвечиваем саму кнопку размера синим
             const isPreset = [2, 4, 8, 12].includes(state.lineWidth);
             sizeTrigger.classList.toggle('active', !isPreset);
         };
 
+        // Логика открытия окошка
         sizeTrigger.onclick = (e) => {
+            // Если кликнули внутри всплывающего окна (по ползунку или кнопкам), ничего не делаем
+            if (e.target.closest('#itd-size-pop')) return;
+            
             e.stopPropagation();
             const isOpen = sizePopup.classList.contains('show');
             
             if (!isOpen) {
-                // Вычисляем координаты кнопки
                 const rect = sizeTrigger.getBoundingClientRect();
-                
-                // Устанавливаем положение окна над кнопкой
-                // rect.top - высота окна (примерно 80px) - отступ
-                sizePopup.style.top = (rect.top - 85) + 'px'; 
-                sizePopup.style.left = (rect.left + rect.width / 2 - 80) + 'px'; // 80 - половина ширины окна
-                
+                // Позиционируем окно точно над кнопкой
+                sizePopup.style.bottom = (window.innerHeight - rect.top + 10) + 'px'; 
+                sizePopup.style.left = (rect.left + rect.width / 2 - 95) + 'px'; // 95 - половина ширины окна (190/2)
                 sizePopup.classList.add('show');
             } else {
                 sizePopup.classList.remove('show');
             }
         };
 
-        // Исправленный клик вне области
-        const handleOutsideClick = (e) => {
+        // Закрытие при клике вне области кнопки или окна
+        const handleOutsideClickSize = (e) => {
             if (sizePopup.classList.contains('show')) {
-                // Если кликнули не по кнопке и не по самому всплывающему окну
-                if (!sizeTrigger.contains(e.target) && !sizePopup.contains(e.target)) {
+                if (!sizeTrigger.contains(e.target)) {
                     sizePopup.classList.remove('show');
                 }
             }
         };
-        document.addEventListener('mousedown', handleOutsideClick);
+        document.addEventListener('mousedown', handleOutsideClickSize);
 
+        // Изменение размера ползунком
         sizeSlider.oninput = (e) => {
             updateBrushSize(e.target.value);
         };
 
+        // Логика кнопок "+" и "-"
+        btnMinus.onclick = (e) => {
+            e.stopPropagation();
+            updateBrushSize(state.lineWidth - 1);
+        };
+
+        btnPlus.onclick = (e) => {
+            e.stopPropagation();
+            updateBrushSize(state.lineWidth + 1);
+        };
+
+        // Быстрые кнопки выбора размера (2, 4, 8, 12)
         modal.querySelectorAll('.size-btn').forEach(btn => {
             btn.onclick = (e) => {
                 e.stopPropagation(); 
                 updateBrushSize(btn.dataset.size);
-                sizePopup.classList.remove('show');
+                sizePopup.classList.remove('show'); // Закрываем окно при выборе пресета
             };
         });
+        // --- КОНЕЦ НОВОГО БЛОКА ---
 
         modal.querySelector('#btn-undo').onclick = undo;
         modal.querySelector('#btn-redo').onclick = redo;
@@ -1416,6 +1888,8 @@
                     };
 
                     document.getElementById('itd-crop-layer').classList.add('active');
+					document.querySelector('.canvas-wrapper').classList.add('cropping');
+					document.querySelector('.itd-editor-container').classList.add('cropping');
                     updateCropUI();
                 };
                 img.src = event.target.result;
@@ -1483,15 +1957,19 @@
         const handleEnd = () => { if (state.isDrawing) { state.isDrawing = false; saveHistory(); } };
         const brushCursor = document.getElementById('itd-brush-cursor');
         const updateCursor = (e) => {
-            if (!brushCursor || state.tool === 'fill') return;
-            brushCursor.style.left = e.clientX + 'px';
-            brushCursor.style.top = e.clientY + 'px';
-            brushCursor.style.width = state.lineWidth + 'px';
-            brushCursor.style.height = state.lineWidth + 'px';
-        };
+			if (!brushCursor || state.tool === 'fill' || !state.dynamicCursor) {
+				if (brushCursor) brushCursor.style.display = 'none';
+				return;
+			}
+			brushCursor.style.display = 'block';
+			brushCursor.style.left = e.clientX + 'px';
+			brushCursor.style.top = e.clientY + 'px';
+			brushCursor.style.width = state.lineWidth + 'px';
+			brushCursor.style.height = state.lineWidth + 'px';
+		};
         canvas.addEventListener('mousemove', updateCursor);
         canvas.addEventListener('mouseenter', () => { 
-            if (!state.isPreview && state.tool !== 'fill') {
+            if (!state.isPreview && state.tool !== 'fill' && state.dynamicCursor) {
                 brushCursor.style.display = 'block';
             } 
         });
@@ -1505,16 +1983,32 @@
         modal.querySelector('#itd-btn-footer-save').onclick = (e) => {
             const saveLogic = async () => {
                 const btn = modal.querySelector('.itd-btn-save');
+                const container = modal.querySelector('.itd-editor-container');
                 const originalText = btn.innerText;
+                
+                // Создаем оверлей блокировки
+                const loader = document.createElement('div');
+                loader.className = 'itd-loading-blocker';
+                loader.innerHTML = `
+                    <div class="itd-loading-spinner"></div>
+                    <div style="font-size: 18px; font-weight: 600;">Подождите, идет загрузка...</div>
+                    <div style="font-size: 13px; color: #8e8e93;">Ваш баннер обновляется</div>
+                `;
+                
+                // Блокируем кнопку и добавляем оверлей
                 btn.disabled = true;
                 btn.innerText = "Загрузка...";
+                container.appendChild(loader);
                 
                 canvas.toBlob(async (blob) => {
                     try {
                         await uploadToAPI(blob);
                         btn.innerText = "Готово!";
+                        // При успехе оставляем оверлей до перезагрузки
                         setTimeout(() => { location.reload(); }, 500);
                     } catch (err) {
+                        // В случае ошибки убираем блокировку
+                        loader.remove();
                         alert("Ошибка загрузки: " + err.message);
                         btn.disabled = false;
                         btn.innerText = originalText;
@@ -1561,6 +2055,8 @@
 
         cropCancel.onclick = () => {
             cropLayer.classList.remove('active');
+            document.querySelector('.canvas-wrapper').classList.remove('cropping');
+            document.querySelector('.itd-editor-container').classList.remove('cropping');
             state.isCropping = false;
             const wrp = cropLayer.querySelector('.itd-crop-canvas-wrapper');
             if (wrp) wrp.remove();
@@ -1573,21 +2069,22 @@
             saveHistory();
             cropCancel.click(); // Закрываем режим
         };
-
         // Логика перетаскивания и изменения размера
         let isDragging = false, isResizing = false, startX, startY, startParams;
+        let activeHandle = null; // Запоминаем за какой угол тянем
 
         cropLayer.onmousedown = (e) => {
             const wrapper = cropLayer.querySelector('.itd-crop-canvas-wrapper');
             if (!wrapper) return;
             
-            const handle = e.target.closest('.handle-se');
+            const handle = e.target.closest('.crop-handle');
             startX = e.clientX;
             startY = e.clientY;
             startParams = { ...state.cropParams };
 
             if (handle) {
                 isResizing = true;
+                activeHandle = handle.dataset.handle; // Получаем nw, ne, sw или se
             } else if (e.target.closest('.itd-crop-canvas-wrapper') || e.target.tagName === 'CANVAS') {
                 isDragging = true;
             }
@@ -1601,40 +2098,72 @@
             const dy = e.clientY - startY;
 
             if (isDragging) {
-				state.cropParams.x = startParams.x + dx;
-				state.cropParams.y = startParams.y + dy;
-				} else if (isResizing) {
-                // Максимально допустимая ширина и высота с учетом текущей позиции X и Y
-                let maxWidth = canvas.width - startParams.x;
-                let maxHeight = canvas.height - startParams.y;
+                state.cropParams.x = startParams.x + dx;
+                state.cropParams.y = startParams.y + dy;
+            } else if (isResizing) {
+                let newW = startParams.w;
+                let newH = startParams.h;
+                let newX = startParams.x;
+                let newY = startParams.y;
 
-                let newW = Math.max(20, startParams.w + dx);
-                let newH = Math.max(20, startParams.h + dy);
+                // Изменяем размеры в зависимости от угла, за который тянем
+                if (activeHandle === 'se') {
+                    newW = startParams.w + dx;
+                    newH = startParams.h + dy;
+                } else if (activeHandle === 'nw') {
+                    newW = startParams.w - dx;
+                    newH = startParams.h - dy;
+                    newX = startParams.x + dx;
+                    newY = startParams.y + dy;
+                } else if (activeHandle === 'ne') {
+                    newW = startParams.w + dx;
+                    newH = startParams.h - dy;
+                    newY = startParams.y + dy;
+                } else if (activeHandle === 'sw') {
+                    newW = startParams.w - dx;
+                    newH = startParams.h + dy;
+                    newX = startParams.x + dx;
+                }
 
-                // Ограничиваем размер краями холста
-                if (newW > maxWidth) newW = maxWidth;
-                if (newH > maxHeight) newH = maxHeight;
+                // Защита от выворачивания картинки наизнанку (минимум 20px)
+                if (newW < 20) {
+                    newW = 20;
+                    if (activeHandle === 'nw' || activeHandle === 'sw') newX = startParams.x + startParams.w - 20;
+                }
+                if (newH < 20) {
+                    newH = 20;
+                    if (activeHandle === 'nw' || activeHandle === 'ne') newY = startParams.y + startParams.h - 20;
+                }
 
+                // Строгое сохранение пропорций (по ширине)
                 if (state.cropParams.ratio) {
-                    // Если сохраняем пропорции, проверяем, какой из размеров стал ограничивающим
-                    let ratioW = newW;
-                    let ratioH = newW / state.cropParams.origRatio;
-
-                    if (ratioH > maxHeight) {
-                        ratioH = maxHeight;
-                        ratioW = ratioH * state.cropParams.origRatio;
+                    let propH = newW / state.cropParams.origRatio;
+                    
+                    if (activeHandle === 'se') {
+                        newH = propH;
+                    } else if (activeHandle === 'nw') {
+                        newY = startParams.y + (startParams.h - propH);
+                        newH = propH;
+                    } else if (activeHandle === 'ne') {
+                        newY = startParams.y + (startParams.h - propH);
+                        newH = propH;
+                    } else if (activeHandle === 'sw') {
+                        newH = propH;
                     }
-                    newW = ratioW;
-                    newH = ratioH;
                 }
 
                 state.cropParams.w = newW;
                 state.cropParams.h = newH;
+                state.cropParams.x = newX;
+                state.cropParams.y = newY;
             }
             updateCropUI();
         });
 
-        window.addEventListener('mouseup', () => { isDragging = isResizing = false; });
+        window.addEventListener('mouseup', () => { 
+            isDragging = isResizing = false; 
+            activeHandle = null;
+        });
 		cropLayer.addEventListener('wheel', (e) => {
 			if (!state.isCropping) return;
 			e.preventDefault(); // Запрещаем прокрутку страницы
