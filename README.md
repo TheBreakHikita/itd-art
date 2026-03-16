@@ -1,4 +1,4 @@
-# 🎨 ITD ART — Твой личный мини-Photoshop внутри itd.com
+# 🎨 ITD ART — Твой личный мини-Photoshop внутри итд.com
 
 [![Update](https://img.shields.io/badge/Установить%20/%20Обновить-Актуальная%20версия-brightgreen.svg)](https://github.com/TheBreakHikita/itd-art/raw/refs/heads/main/itd_art.user.js)
 [![Platform](https://img.shields.io/badge/Платформа-итд.com-orange.svg)](https://итд.com)
