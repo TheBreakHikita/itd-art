@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ITD ART
 // @namespace    http://tampermonkey.net/
-// @version      2.4
+// @version      3.0
 // @description  Новое окно рисования с расширением функционала. Новости и обновления: https://t.me/itd_art
 // @author       TheBreakHikita
 // @match        https://xn--d1ah4a.com/*
@@ -17,6 +17,7 @@
     let state = {
         isOpen: false,
 		isTouch: false,
+		isDefaultEditor: localStorage.getItem('itd_default_editor') === 'true',
         mode: 'banner',
         tool: 'brush',
         color: '#000000',
@@ -248,6 +249,14 @@
         .itd-btn-confirm-yes { background: #ff3b30; color: #fff; } /* Красная для отмены */
         .itd-btn-confirm-save { background: #34c759; color: #fff; } /* Зеленая для сохранения */
         .itd-btn-confirm-no { background: #3a3a3c; color: #fff; }
+		.itd-btn-confirm-standard { background: #5e5e62; color: #fff; }
+        .itd-btn-confirm-standard:hover { background: #717175; }
+        
+        /* Мобильная адаптация для окна с 3 кнопками */
+        @media (max-width: 480px) {
+            .itd-confirm-buttons { flex-direction: column; gap: 10px; align-items: stretch; }
+            .itd-confirm-buttons .itd-btn { width: 100%; padding: 12px; margin: 0; }
+        }
 		/* Кнопка настроек */
         .itd-btn-settings { background: #3a3a3c; color: #fff; padding: 10px; display: flex; align-items: center; justify-content: center; }
         .itd-btn-settings:hover { background: #48484a; }
@@ -769,6 +778,17 @@
                 top: 50% !important; transform: translateY(-50%) !important; 
             }
         }
+        .itd-btn-info { gap: 6px; white-space: nowrap; }
+        .itd-version-text { font-size: 13px; font-weight: 600; color: #ebebf5; }
+		
+        @media (max-width: 1200px) {
+            .itd-btn-settings { flex: 0 0 auto !important; min-width: auto !important; }
+        }
+        
+        @media (max-height: 500px) and (orientation: landscape) {
+            .itd-version-text { display: none; }
+            .itd-btn-info { padding: 10px !important; justify-content: center; }
+        }
     `;
 
     const styleSheet = document.createElement("style");
@@ -974,8 +994,12 @@
         dataTransfer.items.add(file);
 
         // 2. Ищем невидимую кнопку загрузки файлов на сайте
-        // Ищем любой input типа file, который принимает картинки
-        const fileInput = document.querySelector('input[type="file"]');
+        // Исключаем наш собственный инпут плагина (#itd-file-input)
+        const allFileInputs = Array.from(document.querySelectorAll('input[type="file"]:not(#itd-file-input)'));
+        
+        // Берем ПОСЛЕДНИЙ инпут на странице. 
+        // На мобилках модальное окно рендерится в конце DOM-дерева, поэтому его инпут будет последним.
+        const fileInput = allFileInputs[allFileInputs.length - 1];
         
         if (!fileInput) {
             // Если сайт спрятал инпут так, что его не найти, используем буфер обмена
@@ -1360,6 +1384,27 @@
             confirmOverlay.remove();
         };
     }
+	function showEditorChoiceDialog(titleText, descText, onItdArt, onStandard) {
+        const confirmOverlay = document.createElement('div');
+        confirmOverlay.className = 'itd-confirm-overlay';
+        
+        confirmOverlay.innerHTML = `
+            <div class="itd-confirm-modal" style="width: 480px; max-width: 90%;">
+                <div class="itd-confirm-text" style="font-weight: 600; font-size: 18px; margin-bottom: 8px;">${titleText}</div>
+                <div class="itd-confirm-text" style="font-size: 14px; color: #8e8e93; margin-bottom: 24px;">${descText}</div>
+                <div class="itd-confirm-buttons" style="flex-wrap: wrap; gap: 10px;">
+                    <button class="itd-btn itd-btn-save" id="choice-itd" style="min-width: 0; flex: 1; padding: 10px;">ITD ART</button>
+                    <button class="itd-btn itd-btn-confirm-standard" id="choice-standard" style="min-width: 0; flex: 1; padding: 10px;">Стандартный</button>
+                    <button class="itd-btn itd-btn-confirm-no" id="choice-cancel" style="min-width: 0; padding: 10px 20px;">Отмена</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(confirmOverlay);
+
+        confirmOverlay.querySelector('#choice-itd').onclick = () => { confirmOverlay.remove(); onItdArt(); };
+        confirmOverlay.querySelector('#choice-standard').onclick = () => { confirmOverlay.remove(); onStandard(); };
+        confirmOverlay.querySelector('#choice-cancel').onclick = () => confirmOverlay.remove();
+    }
     function showSettingsDialog() {
         const overlay = document.createElement('div');
         overlay.className = 'itd-confirm-overlay';
@@ -1371,6 +1416,13 @@
                 </div>
                 <div class="itd-settings-divider"></div>
                 <div class="itd-settings-body" style="padding: 16px 24px;">
+					<div class="itd-settings-item">
+                        <span>Выбрать ИТД ART основным редактором</span>
+                        <label class="itd-switch">
+                            <input type="checkbox" id="setting-default-editor" ${state.isDefaultEditor ? 'checked' : ''}>
+                            <span class="itd-slider"></span>
+                        </label>
+                    </div>
                     <div class="itd-settings-item">
                         <span>Подтверждение при выходе и сохранении</span>
                         <label class="itd-switch">
@@ -1423,6 +1475,10 @@
         overlay.querySelector('#settings-x').onclick = close;
         overlay.querySelector('#settings-close').onclick = close;
         
+		overlay.querySelector('#setting-default-editor').onchange = (e) => {
+            state.isDefaultEditor = e.target.checked;
+            localStorage.setItem('itd_default_editor', e.target.checked);
+        };
         // 1. Подтверждения
         overlay.querySelector('#setting-confirm').onchange = (e) => {
             state.showConfirmations = e.target.checked;
@@ -1492,6 +1548,94 @@
             state.saveIndicatorEnabled = e.target.checked;
             localStorage.setItem('itd_save_indicator', e.target.checked);
         };
+    }
+	
+	function showInfoDialog() {
+        const overlay = document.createElement('div');
+        overlay.className = 'itd-confirm-overlay';
+        overlay.innerHTML = `
+            <style>
+                .itd-social-btn {
+                    display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; 
+                    border-radius: 8px; text-decoration: none; font-size: 12px; font-weight: 600; 
+                    transition: all 0.2s ease; border: 1px solid transparent; flex-shrink: 0;
+                }
+                .itd-social-btn:hover { transform: translateY(-2px); }
+                .itd-btn-site { background: #3a3a3c; color: #fff; border-color: #48484a; }
+                .itd-btn-site:hover { background: #48484a; color: #fff; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+                .itd-btn-tg { background: rgba(41, 169, 234, 0.15); color: #3ab0f2; border-color: rgba(41, 169, 234, 0.3); }
+                .itd-btn-tg:hover { background: rgba(41, 169, 234, 0.25); color: #55bdf5; box-shadow: 0 4px 10px rgba(41, 169, 234, 0.2); }
+            </style>
+            <div class="itd-confirm-modal" style="width: 520px; max-width: 90%; text-align: left; padding: 0; overflow: hidden; display: flex; flex-direction: column; max-height: 90vh;">
+                <div class="itd-settings-header" style="padding: 20px 24px; margin-bottom: 0; flex-shrink: 0;">
+                    <div class="itd-settings-title">ИТД ART</div>
+                    <button class="itd-settings-close-x" id="info-x">✕</button>
+                </div>
+                <div class="itd-settings-divider"></div>
+                <div class="itd-settings-body" style="padding: 16px 24px; overflow-y: auto; color: #ebebf5; font-size: 14.5px; line-height: 1.5;">
+                    <p style="margin-top: 0; margin-bottom: 12px;"><strong>Привет пользователь!</strong> Я TheBreakHikita (или просто Никита) — создатель плагина ИТД ART!</p>
+                    <p style="margin-bottom: 12px;">Очень старался сделать, чтобы тебе было удобно пользоваться редактором в соц сети ИТД! Я создавал этот плагин на чистом энтузиазме, просто так для тебя! Спасибо за доверие ко мне! И спасибо что скачал и пользуешься моим плагином!</p>
+                    <p style="margin-bottom: 16px; color: #0a84ff;"><strong>Поддержи меня по возможности!</strong> Расскажи друзьям, создай пост о плагине и просто следи за мной. Это лучшая благодарность, показывающая, что мои труды были не напрасны!</p>
+                    
+                    <!-- Ссылки на автора и проект -->
+                    <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 24px;">
+                        <a href="https://итд.com/@Thebreakhikita" target="_blank" class="itd-social-btn itd-btn-site">
+                            <span style="font-size: 10px; font-weight: 900; letter-spacing: 0.5px; background: #fff; color: #1c1c1e; padding: 2px 4px; border-radius: 4px;">ИТД</span>
+                            TheBreakHikita
+                        </a>
+                        <a href="https://t.me/thebreakhikita" target="_blank" class="itd-social-btn itd-btn-tg">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                            Мой Telegram
+                        </a>
+                        <a href="https://t.me/itd_art" target="_blank" class="itd-social-btn itd-btn-tg">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                            Канал ИТД ART
+                        </a>
+                    </div>
+                    
+                    <div style="height: 1px; background: #3a3a3c; margin: 20px 0;"></div>
+                    
+                    <h3 style="color: #fff; font-size: 16px; margin-top: 0; margin-bottom: 14px;">Ребята, которые помогли в создании:</h3>
+                    
+                    <!-- Ханео -->
+                    <div style="background: #2c2c2e; padding: 14px; border-radius: 10px; margin-bottom: 12px; border: 1px solid #3a3a3c;">
+                        <div style="color: #34c759; font-weight: 600; margin-bottom: 4px; font-size: 15px;">Ханео (Ваня)</div>
+                        <div style="color: #8e8e93; font-size: 13.5px; margin-bottom: 12px;">Генератор идей и поддержка! Самый лучший человек, который морально поддерживал и помогал с разработкой своими идеями. Он был со мной на протяжении всего создания плагина, это заслуживает уважения!</div>
+                        <div style="display: flex; gap: 8px;">
+                            <a href="https://итд.com/@glt" target="_blank" class="itd-social-btn itd-btn-site">
+                                <span style="font-size: 10px; font-weight: 900; letter-spacing: 0.5px; background: #fff; color: #1c1c1e; padding: 2px 4px; border-radius: 4px;">ИТД</span>
+                                Перейти в профиль
+                            </a>
+                        </div>
+                    </div>
+                    
+                    <!-- itdStatus -->
+                    <div style="background: #2c2c2e; padding: 14px; border-radius: 10px; border: 1px solid #3a3a3c;">
+                        <div style="color: #ff9500; font-weight: 600; margin-bottom: 4px; font-size: 15px;">Проект itdStatus</div>
+                        <div style="color: #8e8e93; font-size: 13.5px; margin-bottom: 12px;">Отсюда я взял код для работы плагина, чтобы вы могли в моем плагине загружать свои баннеры. Человек адекватный, возможно вам понравится его дополнение сайта новыми фишками.</div>
+                        <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                            <a href="https://итд.com/@itdStatus" target="_blank" class="itd-social-btn itd-btn-site">
+                                <span style="font-size: 10px; font-weight: 900; letter-spacing: 0.5px; background: #fff; color: #1c1c1e; padding: 2px 4px; border-radius: 4px;">ИТД</span>
+                                Профиль
+                            </a>
+                            <a href="https://t.me/itdStatus" target="_blank" class="itd-social-btn itd-btn-tg">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                                Канал в Telegram
+                            </a>
+                        </div>
+                    </div>
+                </div>
+                <div class="itd-settings-divider" style="flex-shrink: 0;"></div>
+                <div class="itd-confirm-buttons" style="padding: 16px 24px; justify-content: flex-end; flex-shrink: 0;">
+                    <button class="itd-btn itd-btn-confirm-no" id="info-close" style="width: 100px;">Закрыть</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        const close = () => overlay.remove();
+        overlay.querySelector('#info-x').onclick = close;
+        overlay.querySelector('#info-close').onclick = close;
     }
 	
 	async function showArchiveDialog() {
@@ -1737,6 +1881,10 @@
 						<button class="itd-btn itd-btn-settings itd-btn-archive" title="История сохранений">
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v4l3 3"></path><path d="M3.05 11a9 9 0 1 1 .5 4m-.5 5v-5h5"></path></svg>
                         </button>
+						<button class="itd-btn itd-btn-settings itd-btn-info" title="Об ИТД ART">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+                            <span class="itd-version-text">v 3.0</span>
+                        </button>
                         <div style="flex-grow: 1;"></div>
                         <button class="itd-btn itd-btn-cancel" id="itd-btn-footer-cancel">Отмена</button>
 						<button class="itd-btn itd-btn-save" id="itd-btn-footer-save">${saveBtnText}</button>
@@ -1762,6 +1910,10 @@
         // 2. Только потом инициализируем логику и события
         initCanvasLogic();
         attachEvents(modalNode);
+        if (!localStorage.getItem('itd_first_launch_info_shown')) {
+            showInfoDialog(); // Показываем окно
+            localStorage.setItem('itd_first_launch_info_shown', 'true');
+        }
     }
 
     function initCanvasLogic() {
@@ -1993,6 +2145,7 @@
         startAutoSaveTimer(); // Запускаем цикл при открытии редактора
         modal.querySelector('.itd-btn-settings').onclick = showSettingsDialog;
         modal.querySelector('.itd-btn-preview').onclick = () => togglePreviewMode(modal);
+		modal.querySelector('.itd-btn-info').onclick = showInfoDialog;
         modal.querySelector('#itd-btn-footer-cancel').onclick = () => {
             const closeAll = () => {
                 const brushCursor = document.getElementById('itd-brush-cursor');
@@ -2594,44 +2747,85 @@
     }
 
     function injectLauncher() {
-        // 1. Логика для старой кнопки (Баннер профиля)
-        if (!document.getElementById('itd-draw-trigger-banner')) {
-            const bannerBtn = document.querySelector('button[title="Нарисовать баннер"]');
-            if (bannerBtn) {
-                const myBtn = bannerBtn.cloneNode(true);
+        // --- 1. ЛОГИКА ДЛЯ БАННЕРА ПРОФИЛЯ ---
+        // Ищем оригинальную кнопку баннера, исключая нашу созданную
+        const originalBannerBtn = document.querySelector('button[title="Нарисовать баннер"]:not(#itd-draw-trigger-banner)');
+
+        if (originalBannerBtn) {
+            if (!document.getElementById('itd-draw-trigger-banner')) {
+                originalBannerBtn.style.display = 'none'; // Прячем оригинал
+
+                const myBtn = originalBannerBtn.cloneNode(true);
                 myBtn.id = 'itd-draw-trigger-banner';
                 myBtn.classList.add('itd-custom-draw-btn');
-                myBtn.title = "ITD ART — Баннер";
-                bannerBtn.before(myBtn); // Вставляем ДО оригинальной
-                myBtn.onclick = (e) => { e.preventDefault(); openModal('banner'); };
-            }
-        }
-
-        // 2. НОВАЯ логика для кнопки в ленте/постах (после палитры)
-        if (!document.getElementById('itd-draw-trigger-post')) {
-            // Ищем кнопку по title из вашего HTML-кода
-            const postBtn = document.querySelector('button[title="Нарисовать"]');
-            
-            if (postBtn) {
-                // Копируем оригинальную кнопку со всеми классами (чтобы дизайн совпадал)
-                const myBtn = postBtn.cloneNode(true);
-                myBtn.id = 'itd-draw-trigger-post';
-                myBtn.classList.add('itd-custom-draw-btn');
-                myBtn.title = "ITD ART — Рисунок в пост";
-                
-                // Принудительно красим иконку в синий цвет, чтобы она отличалась от стандартной палитры
+                myBtn.title = "ITD ART — Баннер"; // Смена title защищает от зависаний!
                 myBtn.style.color = '#0a84ff';
+                myBtn.style.display = '';
 
-                // Вставляем нашу кнопку ПОСЛЕ оригинальной (справа от нее)
-                postBtn.after(myBtn);
+                originalBannerBtn.after(myBtn);
 
-                // Вешаем вызов вашего модального окна
                 myBtn.onclick = (e) => {
                     e.preventDefault();
-                    openModal('post');
+                    e.stopPropagation();
+                    
+                    // Если ИТД установлен по умолчанию - открываем сразу
+                    if (state.isDefaultEditor) {
+                        openModal('banner');
+                    } else {
+                        // Иначе спрашиваем
+                        showEditorChoiceDialog(
+                            "Какой редактор открыть?",
+                            "Выберите инструмент для рисования баннера",
+                            () => openModal('banner'),
+                            () => originalBannerBtn.click()
+                        );
+                    }
                 };
+            } else {
+                originalBannerBtn.style.display = 'none';
             }
         }
+
+        // --- 2. ЛОГИКА ДЛЯ КНОПОК В ПОСТАХ (ПК и Мобайл) ---
+        // Ищем оригинальные кнопки рисования в постах (их может быть несколько на странице)
+        // Исключаем те, которые мы уже обработали (по специальному атрибуту)
+        const postBtns = document.querySelectorAll('button[title="Нарисовать"]:not([data-itd-handled="true"])');
+        
+        postBtns.forEach((originalPostBtn) => {
+            // Прячем оригинал и помечаем его как обработанный, чтобы Observer его больше не трогал
+            originalPostBtn.style.display = 'none';
+            originalPostBtn.setAttribute('data-itd-handled', 'true');
+
+            // Создаем нашу кнопку
+            const myBtn = originalPostBtn.cloneNode(true);
+            myBtn.removeAttribute('data-itd-handled'); // У клона убираем метку
+            myBtn.classList.add('itd-custom-draw-btn');
+            myBtn.title = "ITD ART — Рисунок в пост"; // Смена title исключает клона из поиска!
+            myBtn.style.color = '#0a84ff';
+            myBtn.style.display = '';
+
+            // Вставляем нашу кнопку после оригинальной
+            originalPostBtn.after(myBtn);
+
+            // Вешаем обработчик
+            myBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+
+                // Если ИТД установлен по умолчанию - открываем сразу
+                if (state.isDefaultEditor) {
+                    openModal('post');
+                } else {
+                    // Иначе спрашиваем
+                    showEditorChoiceDialog(
+                        "Какой редактор открыть?",
+                        "Выберите инструмент для создания рисунка в пост",
+                        () => openModal('post'),
+                        () => originalPostBtn.click() // Если выбран стандартный - жмем на скрытый оригинал
+                    );
+                }
+            };
+        });
     }
 
     const observer = new MutationObserver(injectLauncher);
