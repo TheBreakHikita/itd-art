@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ITD ART
 // @namespace    http://tampermonkey.net/
-// @version      3.0
+// @version      3.0.1
 // @description  Новое окно рисования с расширением функционала. Новости и обновления: https://t.me/itd_art
 // @author       TheBreakHikita
 // @match        https://xn--d1ah4a.com/*
@@ -547,13 +547,14 @@
             box-shadow: 0 0 5px rgba(0,0,0,0.3);
         }
         .itd-editor-container.cropping,
-        .canvas-wrapper.cropping {
+        .canvas-wrapper.cropping,
+        .itd-canvas-area.cropping {
             overflow: visible !important;
         }
         
         .itd-crop-overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            display: none; z-index: 50;
+            display: none; z-index: 10000;
         }
         .itd-crop-overlay.active { display: block; }
 
@@ -588,7 +589,7 @@
         .handle-se { right: -7px; bottom: -7px; cursor: nwse-resize; }
 
         .itd-crop-controls {
-            position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+            position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
             background: #1c1c1e; padding: 10px 16px; border-radius: 14px;
             display: flex; align-items: center; gap: 12px; border: 1px solid #3a3a3c;
             box-shadow: 0 10px 40px rgba(0,0,0,0.8); z-index: 1000; min-width: 400px; justify-content: space-between;
@@ -885,9 +886,21 @@
 }
 
     function saveHistory() {
+        const MAX_HISTORY = 50;
+        
         state.historyStep++;
-        if (state.historyStep < state.history.length) state.history.length = state.historyStep;
+        
+        if (state.historyStep < state.history.length) {
+            state.history.length = state.historyStep;
+        }
+        
         state.history.push(canvas.toDataURL());
+        
+        if (state.history.length > MAX_HISTORY) {
+            state.history.shift();
+            state.historyStep--;  
+        }
+        
         updateUndoButtons();
     }
 
@@ -1923,6 +1936,7 @@
 		oCtx = overlayCanvas.getContext('2d');
 		ctx.lineCap = 'round';
 		ctx.lineJoin = 'round';
+        ctx.globalAlpha = 1.0;
 		saveHistory();
 	}
 
@@ -2148,6 +2162,22 @@
 		modal.querySelector('.itd-btn-info').onclick = showInfoDialog;
         modal.querySelector('#itd-btn-footer-cancel').onclick = () => {
             const closeAll = () => {
+                window.removeEventListener('mousemove', handleMove);
+                window.removeEventListener('mouseup', handleEnd);
+                window.removeEventListener('touchmove', handleMove);
+                window.removeEventListener('touchend', handleEnd);
+                window.removeEventListener('touchcancel', handleEnd);
+
+                window.removeEventListener('mousemove', handleCropMove);
+                window.removeEventListener('touchmove', handleCropMove);
+                window.removeEventListener('mouseup', handleCropEnd);
+                window.removeEventListener('touchend', handleCropEnd);
+
+                document.removeEventListener('mousedown', handleOutsideClickSize);
+
+                window.onmousemove = null; window.ontouchmove = null;
+                window.onmouseup = null; window.ontouchend = null; window.ontouchcancel = null;
+
                 const brushCursor = document.getElementById('itd-brush-cursor');
                 if (brushCursor) brushCursor.remove();
 				if (state.autoSaveTimer) clearInterval(state.autoSaveTimer);
@@ -2318,6 +2348,12 @@
             reader.onload = (event) => {
                 const img = new Image();
                 img.onload = () => {
+                    state.zoom = 1;
+                    const area = modal.querySelector('.itd-canvas-area');
+                    if (area) {
+                        applyZoom(1, area.clientWidth / 2, area.clientHeight / 2);
+                    }
+
                     state.cropImg = img;
                     state.isCropping = true;
                     
@@ -2335,6 +2371,7 @@
                     document.getElementById('itd-crop-layer').classList.add('active');
 					document.querySelector('.canvas-wrapper').classList.add('cropping');
 					document.querySelector('.itd-editor-container').classList.add('cropping');
+					document.querySelector('.itd-canvas-area').classList.add('cropping');
                     updateCropUI();
                 };
                 img.src = event.target.result;
@@ -2363,8 +2400,8 @@
             
             const scaleX = canvas.width / rect.width;
             const scaleY = canvas.height / rect.height;
-            state.startX = (clientX - rect.left) * scaleX;
-            state.startY = (clientY - rect.top) * scaleY;
+            state.startX = Math.round((clientX - rect.left) * scaleX);
+            state.startY = Math.round((clientY - rect.top) * scaleY);
 
             if (state.tool === 'zoomIn' || state.tool === 'zoomOut') {
                 adjustZoom(state.tool === 'zoomIn' ? 0.3 : -0.3, {clientX, clientY}); 
@@ -2384,18 +2421,24 @@
                 state.isDrawing = false; 
                 return;
             }
-            if (state.tool === 'brush' || state.tool === 'eraser') {
+            if (state.tool === 'brush') {
+                // Начинаем рисовать единый контур на невидимом слое
+                oCtx.clearRect(0, 0, canvas.width, canvas.height);
+                oCtx.beginPath();
+                oCtx.lineCap = 'round';
+                oCtx.lineJoin = 'round';
+                oCtx.lineWidth = state.lineWidth;
+                oCtx.strokeStyle = state.color;
+                oCtx.moveTo(state.startX, state.startY);
+                oCtx.lineTo(state.startX, state.startY);
+                oCtx.stroke();
+            } else if (state.tool === 'eraser') {
                 ctx.beginPath();
+                ctx.lineWidth = state.lineWidth;
                 ctx.moveTo(state.startX, state.startY);
                 ctx.lineTo(state.startX, state.startY); 
-                ctx.lineWidth = state.lineWidth;
-                if (state.tool === 'eraser') {
-                    ctx.globalCompositeOperation = 'destination-out';
-                    ctx.strokeStyle = "rgba(0,0,0,1)";
-                } else {
-                    ctx.globalCompositeOperation = 'source-over';
-                    ctx.strokeStyle = state.color;
-                }
+                ctx.globalCompositeOperation = 'destination-out';
+                ctx.strokeStyle = "rgba(0,0,0,1)";
                 ctx.stroke(); 
             } else {
                 ctx.globalCompositeOperation = 'source-over';
@@ -2413,11 +2456,21 @@
             const rect = canvas.getBoundingClientRect();
             const scaleX = canvas.width / rect.width;
             const scaleY = canvas.height / rect.height;
-            const x = (clientX - rect.left) * scaleX;
-            const y = (clientY - rect.top) * scaleY;
+            // Округляем до целых значений при движении
+            const x = Math.round((clientX - rect.left) * scaleX);
+            const y = Math.round((clientY - rect.top) * scaleY);
 
-            if (state.tool === 'brush' || state.tool === 'eraser') {
-                ctx.lineTo(x, y); ctx.stroke();
+            if (state.tool === 'brush') {
+                oCtx.lineTo(x, y);
+                // Очищаем оверлей и отрисовываем весь путь разом!
+                // Исключает наслоение пикселей и грязь по краям на 100%
+                oCtx.clearRect(0, 0, canvas.width, canvas.height);
+                oCtx.stroke();
+            } else if (state.tool === 'eraser') {
+                ctx.lineTo(x, y); 
+                ctx.stroke();
+                ctx.beginPath(); 
+                ctx.moveTo(x, y);
             } else {
                 ctx.putImageData(snapshot, 0, 0);
                 ctx.globalCompositeOperation = 'source-over';
@@ -2432,7 +2485,18 @@
             }
         };
 
-        const handleEnd = () => { if (state.isDrawing) { state.isDrawing = false; saveHistory(); } };
+        const handleEnd = () => { 
+            if (state.isDrawing) { 
+                state.isDrawing = false; 
+                // Если рисовали кистью, переносим финальный идеальный мазок на главный холст
+                if (state.tool === 'brush') {
+                    ctx.globalCompositeOperation = 'source-over';
+                    ctx.drawImage(overlayCanvas, 0, 0);
+                    oCtx.clearRect(0, 0, canvas.width, canvas.height);
+                }
+                saveHistory(); 
+            } 
+        };
         const brushCursor = document.getElementById('itd-brush-cursor');
         
         const updateCursor = (e) => {
@@ -2596,9 +2660,15 @@
             cropLayer.classList.remove('active');
             document.querySelector('.canvas-wrapper').classList.remove('cropping');
             document.querySelector('.itd-editor-container').classList.remove('cropping');
+            document.querySelector('.itd-canvas-area').classList.remove('cropping');
             state.isCropping = false;
             const wrp = cropLayer.querySelector('.itd-crop-canvas-wrapper');
             if (wrp) wrp.remove();
+            
+            window.removeEventListener('mousemove', handleCropMove);
+            window.removeEventListener('touchmove', handleCropMove);
+            window.removeEventListener('mouseup', handleCropEnd);
+            window.removeEventListener('touchend', handleCropEnd);
         };
 
         cropConfirm.onclick = () => {
