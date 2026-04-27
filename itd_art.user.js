@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ITD ART
 // @namespace    http://tampermonkey.net/
-// @version      3.0.1
+// @version      3.0.2
 // @description  Новое окно рисования с расширением функционала. Новости и обновления: https://t.me/itd_art
 // @author       TheBreakHikita
 // @match        https://xn--d1ah4a.com/*
@@ -427,8 +427,8 @@
         }
         /* Если нужно, чтобы текст всё же можно было выделить, 
            но кнопки (верификация, редактировать, подписки) не нажимались: */
-        .preview-active-site-interface .WsNIl9yN, 
-        .preview-active-site-interface .hSN99swS {
+        .preview-active-site-interface .FAvO, 
+        .preview-active-site-interface .dvZr {
             pointer-events: none !important;
             cursor: default !important;
             opacity: 0.8; /* Немного приглушим их визуально */
@@ -886,21 +886,9 @@
 }
 
     function saveHistory() {
-        const MAX_HISTORY = 50;
-        
         state.historyStep++;
-        
-        if (state.historyStep < state.history.length) {
-            state.history.length = state.historyStep;
-        }
-        
+        if (state.historyStep < state.history.length) state.history.length = state.historyStep;
         state.history.push(canvas.toDataURL());
-        
-        if (state.history.length > MAX_HISTORY) {
-            state.history.shift();
-            state.historyStep--;  
-        }
-        
         updateUndoButtons();
     }
 
@@ -1293,47 +1281,31 @@
         input.addEventListener('input', updateFromRgbInputs);
     });
 
-    // Пипетка (адаптирована под ваш canvas)
-    // Пипетка (адаптирована под ваш canvas)
+    // Функция-мост: позволяет обновить палитру извне (при клике по холсту)
+    state.updateColorPanel = (r, g, b) => {
+        const newHsv = rgbToHsv(r, g, b);
+        colorState = { h: newHsv.h / 360, s: newHsv.s / 100, v: newHsv.v / 100 };
+        updateUI();
+    };
+
+    // Внутренняя пипетка (берет цвет кликом по холсту)
     overlay.querySelector('#cp-pipette').onclick = () => {
-		state.isPipetteActive = true;
-        const mainCanvas = document.getElementById('main-canvas');
-        const brushCursor = document.getElementById('itd-brush-cursor');
-        if (!mainCanvas) return;
-        
         const btn = overlay.querySelector('#cp-pipette');
-        btn.classList.add('active');
+        const mainCanvas = document.getElementById('main-canvas');
         
-        // 1. ПРИ АКТИВАЦИИ: Скрываем круг кисти и ставим стандартный крестик
-        if (brushCursor) brushCursor.style.display = 'none';
-        mainCanvas.style.setProperty('cursor', 'crosshair', 'important');
-        
-        const pick = (ev) => {
-            const r = mainCanvas.getBoundingClientRect();
-            const x = (ev.clientX - r.left);
-            const y = (ev.clientY - r.top);
-            const p = ctx.getImageData(x, y, 1, 1).data;
-            
-            const newHsv = rgbToHsv(p[0], p[1], p[2]);
-            colorState = { h: newHsv.h/360, s: newHsv.s/100, v: newHsv.v/100 };
-            
-            updateUI();
+        state.isPipetteActive = !state.isPipetteActive; // Переключаем режим
+
+        if (state.isPipetteActive) {
+            btn.classList.add('active');
+            btn.title = "Кликните по любому месту на холсте для выбора цвета";
+            if (mainCanvas) mainCanvas.style.setProperty('cursor', 'crosshair', 'important');
+        } else {
             btn.classList.remove('active');
-			state.isPipetteActive = false;
-
-            // 2. ПОСЛЕ ВЫБОРА: Возвращаем настройки курсора в зависимости от текущего инструмента
-            if (state.dynamicCursor && state.tool !== 'fill') {
+            btn.title = "Пипетка (выберите цвет на холсте)";
+            if (mainCanvas && state.dynamicCursor && state.tool !== 'fill') {
                 mainCanvas.style.setProperty('cursor', 'none', 'important');
-                if (brushCursor) brushCursor.style.display = 'block';
-            } else {
-                mainCanvas.style.setProperty('cursor', 'crosshair', 'important');
             }
-
-            mainCanvas.removeEventListener('mousedown', pick, { capture: true });
-        };
-        
-        // Удаляем старую строку mainCanvas.style.cursor = 'help';
-        mainCanvas.addEventListener('mousedown', pick, { capture: true });
+        }
     };
 
     // Свотчи
@@ -1943,8 +1915,8 @@
 	function togglePreviewMode(modal) {
         const overlay = modal.querySelector('.itd-modal-overlay');
         const container = modal.querySelector('.itd-editor-container');
-        const bannerImg = document.querySelector('.BLErSWUX img'); 
-        const profileInfo = document.querySelector('.-D3fn7RS');
+        const bannerImg = document.querySelector('.JPGP img'); 
+        const profileInfo = document.querySelector('.tmIi');
         const previewBtn = modal.querySelector('.itd-btn-preview');
 		const wrapper = modal.querySelector('.canvas-wrapper');
         const spacer = modal.querySelector('.itd-footer div[style*="flex-grow"]');
@@ -2162,28 +2134,12 @@
 		modal.querySelector('.itd-btn-info').onclick = showInfoDialog;
         modal.querySelector('#itd-btn-footer-cancel').onclick = () => {
             const closeAll = () => {
-                window.removeEventListener('mousemove', handleMove);
-                window.removeEventListener('mouseup', handleEnd);
-                window.removeEventListener('touchmove', handleMove);
-                window.removeEventListener('touchend', handleEnd);
-                window.removeEventListener('touchcancel', handleEnd);
-
-                window.removeEventListener('mousemove', handleCropMove);
-                window.removeEventListener('touchmove', handleCropMove);
-                window.removeEventListener('mouseup', handleCropEnd);
-                window.removeEventListener('touchend', handleCropEnd);
-
-                document.removeEventListener('mousedown', handleOutsideClickSize);
-
-                window.onmousemove = null; window.ontouchmove = null;
-                window.onmouseup = null; window.ontouchend = null; window.ontouchcancel = null;
-
                 const brushCursor = document.getElementById('itd-brush-cursor');
                 if (brushCursor) brushCursor.remove();
 				if (state.autoSaveTimer) clearInterval(state.autoSaveTimer);
                 if (state.isPreview) {
-                    const bannerImg = document.querySelector('.BLErSWUX img');
-                    const profileInfo = document.querySelector('.-D3fn7RS');
+                    const bannerImg = document.querySelector('.JPGP img');
+                    const profileInfo = document.querySelector('.tmIi');
                     if (bannerImg) bannerImg.style.opacity = '1';
                     if (profileInfo) profileInfo.classList.remove('preview-active-site-interface');
                     state.isPreview = false;
@@ -2380,7 +2336,7 @@
         };
 
         const handleStart = (e) => {
-            if (state.isPreview || state.isCropping || state.isPipetteActive) return;
+            if (state.isPreview || state.isCropping) return;
             
 			// Если это касание пальцем, включаем режим Touch и прячем курсор
             if (e.touches) {
@@ -2406,6 +2362,36 @@
             if (state.tool === 'zoomIn' || state.tool === 'zoomOut') {
                 adjustZoom(state.tool === 'zoomIn' ? 0.3 : -0.3, {clientX, clientY}); 
                 return;
+            }
+
+            // --- ЛОГИКА ВНУТРЕННЕЙ ПИПЕТКИ ---
+            if (state.isPipetteActive) {
+                // Получаем цвет 1 пикселя по координатам клика
+                const pixel = ctx.getImageData(state.startX, state.startY, 1, 1).data;
+                let r = pixel[0], g = pixel[1], b = pixel[2], a = pixel[3];
+
+                // Если ткнули в стертое место (шахматку), цвет считаем белым
+                if (a === 0) { r = 255; g = 255; b = 255; }
+
+                // Передаем данные в панель цветов
+                if (typeof state.updateColorPanel === 'function') {
+                    state.updateColorPanel(r, g, b);
+                }
+
+                // Выключаем пипетку и возвращаем стандартный вид
+                state.isPipetteActive = false;
+                const cpBtn = document.getElementById('dyatlo-color-panel-overlay')?.querySelector('#cp-pipette');
+                if (cpBtn) {
+                    cpBtn.classList.remove('active');
+                    cpBtn.title = "Пипетка (выберите цвет на холсте)";
+                }
+
+                const mainCanvas = document.getElementById('main-canvas');
+                if (mainCanvas && state.dynamicCursor && state.tool !== 'fill') {
+                    mainCanvas.style.setProperty('cursor', 'none', 'important');
+                }
+
+                return; // Прерываем функцию: не даем нарисовать точку кистью!
             }
 
             if (!state.palettePinned) {
@@ -2664,11 +2650,6 @@
             state.isCropping = false;
             const wrp = cropLayer.querySelector('.itd-crop-canvas-wrapper');
             if (wrp) wrp.remove();
-            
-            window.removeEventListener('mousemove', handleCropMove);
-            window.removeEventListener('touchmove', handleCropMove);
-            window.removeEventListener('mouseup', handleCropEnd);
-            window.removeEventListener('touchend', handleCropEnd);
         };
 
         cropConfirm.onclick = () => {
